@@ -47,14 +47,61 @@ const state = {
 // =============================================================
 // Init
 // =============================================================
-document.addEventListener('DOMContentLoaded', () => {
-  state.data = generateMockData();
+document.addEventListener('DOMContentLoaded', async () => {
   setBuildId();
   bindUI();
+  document.getElementById('last-updated').textContent = 'loading…';
+  try {
+    await loadRealData();
+  } catch (err) {
+    console.warn('Real data load failed, falling back to mock:', err);
+    state.data = generateMockData();
+    document.getElementById('last-updated').textContent =
+      'MOCK data (snapshot not found) · ' + new Date().toLocaleString('en-GB');
+  }
   loadGeographyAndRender();
-  document.getElementById('last-updated').textContent =
-    'mock data · last update: ' + new Date().toLocaleString('en-GB');
 });
+
+async function loadRealData() {
+  const manifest = await fetch('./data/manifest.json', { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error('manifest 404'); return r.json(); });
+
+  const dailyPath = './data/' + manifest.datasets.dam_daily.path;
+  const daily = await fetch(dailyPath, { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error('dam_daily 404'); return r.json(); });
+
+  // Reshape: { zone -> [ {date, mean, peak, offpeak} ] }
+  const map = new Map();
+  for (const r of daily.rows) {
+    if (!map.has(r.zone)) map.set(r.zone, []);
+    map.get(r.zone).push({
+      date: r.date,
+      mean: r.mean_eur,
+      peak: r.peak_eur,
+      offpeak: r.offpeak_eur,
+    });
+  }
+  state.data = map;
+
+  // Cap day-input upper bound to the latest available date
+  let maxDate = null;
+  for (const arr of map.values()) {
+    if (!arr.length) continue;
+    const last = arr[arr.length - 1].date;
+    if (!maxDate || last > maxDate) maxDate = last;
+  }
+  if (maxDate) {
+    state.date = maxDate;
+    const di = document.getElementById('dam-date');
+    di.value = maxDate; di.max = maxDate;
+  }
+
+  const ts = manifest.generated_at || daily.generated_at;
+  const fmt = ts ? new Date(ts).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+  const zones = manifest.zones ? manifest.zones.length : map.size;
+  document.getElementById('last-updated').textContent =
+    `live · ${zones} zones · ${(daily.row_count ?? daily.rows.length).toLocaleString()} daily rows · last snapshot: ${fmt}`;
+}
 
 // =============================================================
 // UI bindings

@@ -1,25 +1,25 @@
 {
   "schema_version": 1,
-  "generated_at": null,
-  "source": "mock",
+  "generated_at": "2026-05-08T15:11:00Z",
+  "source": "local_postgres",
   "zones": [
-    "UA","PL","RO","HU","SK","GR","BG","HR","SI","RS",
-    "IT-NORD","IT-CNOR","IT-CSUD","IT-SUD","IT-SICI","IT-SARD","IT-CALA",
-    "DE-LU","ES"
+    "BG","DE-LU","ES","GR","HR","HU",
+    "IT-CALA","IT-CNOR","IT-CSUD","IT-NORD","IT-SARD","IT-SICI","IT-SUD",
+    "PL","RO","RS","SI","SK","UA"
   ],
   "datasets": {
     "dam_daily": {
       "path": "dam_daily.json",
-      "fields": ["zone","date","mean_eur","peak_eur","offpeak_eur"],
+      "fields": ["zone","date","mean_eur","peak_eur","offpeak_eur","hours"],
       "granularity": "daily",
-      "currency": "EUR"
-    },
-    "dam_hourly": {
-      "path_pattern": "dam_hourly_{year}.json",
-      "fields": ["zone","delivery_start_cet","hour_cet","price_eur"],
-      "granularity": "hourly",
       "currency": "EUR",
-      "note": "split by year, lazy-loaded"
+      "timezone": "Europe/Berlin",
+      "date_range": ["2021-01-01", "2026-05-05"]
     }
-  }
+  },
+  "notes": [
+    "All prices are converted to EUR. UA prices originate in UAH and are converted via NBU daily rates.",
+    "All daily aggregates are computed against Europe/Berlin (CET) day boundary.",
+    "Peak window is hours 9-20 CET inclusive; off-peak is the complement."
+  ]
 }
