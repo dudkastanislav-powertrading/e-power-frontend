@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "generated_at": null,
+  "source": "mock",
+  "zones": [
+    "UA","PL","RO","HU","SK","GR","BG","HR","SI","RS",
+    "IT-NORD","IT-CNOR","IT-CSUD","IT-SUD","IT-SICI","IT-SARD","IT-CALA",
+    "DE-LU","ES"
+  ],
+  "datasets": {
+    "dam_daily": {
+      "path": "dam_daily.json",
+      "fields": ["zone","date","mean_eur","peak_eur","offpeak_eur"],
+      "granularity": "daily",
+      "currency": "EUR"
+    },
+    "dam_hourly": {
+      "path_pattern": "dam_hourly_{year}.json",
+      "fields": ["zone","delivery_start_cet","hour_cet","price_eur"],
+      "granularity": "hourly",
+      "currency": "EUR",
+      "note": "split by year, lazy-loaded"
+    }
+  }
+}

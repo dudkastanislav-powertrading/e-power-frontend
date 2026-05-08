@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>E-Power — European Power Markets</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">⚡</span>
+      <span class="brand-name">E-POWER</span>
+    </div>
+    <nav class="topnav">
+      <a class="nav-link active" data-view="dam-map">Day-Ahead Map</a>
+      <a class="nav-link" data-view="dam-spreads">Market Spreads</a>
+      <a class="nav-link" data-view="generation">Actual Generation</a>
+      <a class="nav-link" data-view="futures">Futures</a>
+    </nav>
+    <div class="topbar-meta">
+      <span id="last-updated">last update: —</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="map-panel">
+      <div class="mode-tabs" role="tablist">
+        <button class="mode-tab active" data-mode="day" role="tab">Day</button>
+        <button class="mode-tab" data-mode="mtd" role="tab">Month-to-date</button>
+        <button class="mode-tab" data-mode="ytd" role="tab">Year-to-date</button>
+        <button class="mode-tab" data-mode="custom" role="tab">Custom range</button>
+      </div>
+
+      <div class="mode-controls">
+        <div class="control-group" id="control-day">
+          <label for="dam-date">Day</label>
+          <input type="date" id="dam-date" />
+        </div>
+        <div class="control-group hidden" id="control-custom">
+          <label>From</label>
+          <input type="date" id="dam-from" />
+          <label>To</label>
+          <input type="date" id="dam-to" />
+        </div>
+        <div class="control-group">
+          <label>Profile</label>
+          <select id="dam-profile">
+            <option value="baseload">Base load (24h avg)</option>
+            <option value="peak">Peak (8–20 CET)</option>
+            <option value="offpeak">Off-peak (rest)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="map-title-row">
+        <h2 id="map-title">Day-ahead average prices for —</h2>
+        <span class="map-units">EUR / MWh · CET h 1–24</span>
+      </div>
+
+      <div class="map-canvas">
+        <svg id="europe-map" viewBox="0 0 900 700" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="map-legend" id="map-legend"></div>
+        <div class="map-status" id="map-status">Loading map…</div>
+      </div>
+    </section>
+
+    <aside class="table-panel">
+      <h3>Day-Ahead Market Prices (€/MWh)</h3>
+      <div class="table-wrap">
+        <table id="dam-table">
+          <thead>
+            <tr>
+              <th data-sort="zone">Zone ▾</th>
+              <th data-sort="price" class="num">Selected</th>
+              <th data-sort="mtd" class="num">MTD</th>
+              <th data-sort="ytd" class="num">YTD</th>
+            </tr>
+          </thead>
+          <tbody id="dam-tbody"></tbody>
+        </table>
+      </div>
+      <div class="table-footer">
+        <span id="rows-count">— zones</span>
+        <span class="data-source">data: ENTSO-E · NBU · ICE</span>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footnote">
+    <span>E-Power · self-hosted European power markets dashboard</span>
+    <span>build: <code id="build-id">dev</code></span>
+  </footer>
+
+  <!-- Vendor libs -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+
+  <!-- App -->
+  <script src="app.js" type="module"></script>
+</body>
+</html>
