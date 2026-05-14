@@ -67,18 +67,26 @@ async function loadRealData() {
     .then(r => { if (!r.ok) throw new Error('manifest 404'); return r.json(); });
 
   const dailyPath = './data/' + manifest.datasets.dam_daily.path;
-  const daily = await fetch(dailyPath, { cache: 'no-cache' })
+  const daily = await fetch(dailyPath, { cache: 'no-cache' })  // fixed
     .then(r => { if (!r.ok) throw new Error('dam_daily 404'); return r.json(); });
 
   // Reshape: { zone -> [ {date, mean, peak, offpeak} ] }
+  // Schema v2: rows are { z, d, m, p, o } compact form. v1: { zone, date, mean_eur, ... }
+  const v2 = (daily.schema_version === 2);
+  const fZone = v2 ? 'z' : 'zone';
+  const fDate = v2 ? 'd' : 'date';
+  const fMean = v2 ? 'm' : 'mean_eur';
+  const fPeak = v2 ? 'p' : 'peak_eur';
+  const fOff  = v2 ? 'o' : 'offpeak_eur';
   const map = new Map();
   for (const r of daily.rows) {
-    if (!map.has(r.zone)) map.set(r.zone, []);
-    map.get(r.zone).push({
-      date: r.date,
-      mean: r.mean_eur,
-      peak: r.peak_eur,
-      offpeak: r.offpeak_eur,
+    const z = r[fZone];
+    if (!map.has(z)) map.set(z, []);
+    map.get(z).push({
+      date: r[fDate],
+      mean: r[fMean],
+      peak: r[fPeak],
+      offpeak: r[fOff],
     });
   }
   state.data = map;
@@ -353,12 +361,18 @@ function renderMap() {
   const eu = countries.filter(f => isEurope(f));
 
   const projection = d3.geoMercator()
-    .center([13, 51])
-    .scale(820)
-    .translate([450, 360]);
+    .center([13, 50])
+    .scale(720)
+    .translate([450, 305]);
   const path = d3.geoPath().projection(projection);
 
-  const colorScale = priceColorScale();
+  // Adaptive yellow→orange→red scale based on actual visible prices.
+  // This way every Day/MTD/YTD/Custom view shows full contrast even when
+  // all zones cluster in a narrow band like 80..150 EUR.
+  const visibleValues = Array.from(COLORED_ISO3)
+    .map(iso3 => getCountryPrice(iso3, state.mode, state.profile))
+    .filter(v => v != null);
+  const colorScale = priceColorScale(visibleValues);
 
   // Country shapes
   const g = svg.append('g').attr('class', 'countries-layer');
@@ -384,16 +398,12 @@ function renderMap() {
           return `${f.properties.name}: ${v == null ? 'no data' : fmt(v) + ' €/MWh'}`;
         });
 
-  // Country labels (only for zones we colorize)
+  // Country labels (only for zones we colorize) — always black bold for contrast
   svg.append('g').attr('class', 'labels-layer')
     .selectAll('text')
     .data(eu.filter(f => COLORED_ISO3.has(isoNum2Iso3[f.id] || '')))
     .join('text')
-      .attr('class', f => {
-        const iso3 = isoNum2Iso3[f.id];
-        const v = getCountryPrice(iso3, state.mode, state.profile);
-        return 'country-label' + (v != null && Math.abs(v) > 130 ? ' dark-bg' : '');
-      })
+      .attr('class', 'country-label')
       .attr('transform', f => `translate(${path.centroid(f)})`)
       .each(function(f) {
         const iso3 = isoNum2Iso3[f.id];
@@ -418,21 +428,36 @@ function renderLegend(scale) {
   legendEl.appendChild(grad);
   const ticksWrap = document.createElement('span');
   ticksWrap.style.display = 'flex'; ticksWrap.style.gap = '6px';
-  stops.forEach(s => {
+  // Show only min/mid/max for compactness, integers, with €/MWh suffix
+  const labels = [stops[0], stops[Math.floor(stops.length / 2)], stops[stops.length - 1]];
+  labels.forEach((s, i) => {
     const t = document.createElement('span');
-    t.textContent = (s > 0 ? '+' : '') + s;
+    t.textContent = Math.round(s) + (i === labels.length - 1 ? ' €' : '');
     t.style.fontSize = '10px'; t.style.color = '#5b6471';
     ticksWrap.appendChild(t);
   });
   legendEl.appendChild(ticksWrap);
 }
 
-function priceColorScale() {
-  // Domain in EUR/MWh — covers realistic 2021-2026 European DAM range
-  return d3.scaleLinear()
-    .domain([-50, 0, 60, 120, 200, 350])
-    .range(['#1a4f8e', '#5d8fbf', '#e6e8ed', '#f5cf68', '#e2733a', '#8b1f1f'])
-    .clamp(true);
+function priceColorScale(values) {
+  // Yellow → orange → red gradient anchored to actual visible range.
+  // Falls back to a static range if no data yet.
+  const palette = ['#fff8d6', '#ffe28a', '#fbb03b', '#f57c1f', '#d04020', '#7a1010'];
+  if (!values || !values.length) {
+    return d3.scaleLinear().domain([0, 50, 100, 150, 200, 280]).range(palette).clamp(true);
+  }
+  // Use min..max with a small floor so we don't anchor to negative outliers
+  const sorted = [...values].sort((a, b) => a - b);
+  const lo = Math.max(0, Math.floor(sorted[0]));
+  const hi = Math.ceil(sorted[sorted.length - 1]);
+  // Avoid degenerate (lo == hi) case
+  const span = Math.max(hi - lo, 1);
+  const stops = [0, 0.2, 0.4, 0.6, 0.8, 1].map(t => lo + t * span);
+  const scale = d3.scaleLinear().domain(stops).range(palette).clamp(true);
+  // Expose domain min/max for the legend
+  scale._dataMin = lo;
+  scale._dataMax = hi;
+  return scale;
 }
 
 function renderTable() {

@@ -99,28 +99,32 @@ button { font: inherit; cursor: pointer; }
 
 .map-canvas { position: relative; width: 100%; }
 #europe-map {
-  width: 100%; height: auto; aspect-ratio: 9 / 7;
+  width: 100%; height: auto;
+  aspect-ratio: 16 / 10;
+  max-height: calc(100vh - 220px);
   background: #f9fafb;
   border-radius: 6px;
 }
 
-/* Country paths */
+/* Country paths — fill comes from SVG attribute, set per-country in app.js */
 .country-path {
-  fill: #e6e8ed; stroke: #ffffff; stroke-width: 0.6;
+  stroke: #ffffff; stroke-width: 0.6;
   transition: fill 120ms ease;
 }
 .country-path.has-data { cursor: pointer; }
-.country-path.has-data:hover { stroke: #1f2730; stroke-width: 1.2; }
+.country-path.has-data:hover { stroke: #1f2730; stroke-width: 1.4; }
 .country-label {
-  font-size: 10px; font-weight: 600;
-  fill: #1f2730; pointer-events: none;
+  font-size: 12px; font-weight: 700;
+  fill: #000000; pointer-events: none;
   text-anchor: middle;
+  paint-order: stroke fill;
+  stroke: rgba(255,255,255,0.85);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
 }
-.country-label.dark-bg { fill: #ffffff; }
 .country-label .price {
-  font-weight: 500; fill: #1f2730;
+  font-weight: 700; fill: #000000;
 }
-.country-label.dark-bg .price { fill: #ffffff; }
 
 /* Legend */
 .map-legend {
@@ -164,7 +168,7 @@ button { font: inherit; cursor: pointer; }
   font-size: 14px; font-weight: 600;
 }
 .table-wrap {
-  max-height: 70vh;
+  max-height: calc(100vh - 240px);
   overflow-y: auto;
   border: 1px solid #f0f1f4; border-radius: 6px;
 }
