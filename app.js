@@ -252,7 +252,10 @@ function getZonePrice(zoneCode, mode, profile) {
   let slice;
   if (mode === 'day') {
     const row = series.find(r => r.date === state.date);
-    return row ? row[field] : null;
+    if (!row) return null;
+    // peak/offpeak may be null on a partial day (DAM not yet fully published).
+    // Fall back to mean so the map still shows a color for the zone.
+    return row[field] != null ? row[field] : row.mean;
   }
   if (mode === 'mtd') {
     const ref = parseISO(state.date);
@@ -273,8 +276,7 @@ function getZonePrice(zoneCode, mode, profile) {
     slice = series.filter(r => r.date >= state.rangeFrom && r.date <= state.rangeTo);
   }
   if (!slice || slice.length === 0) return null;
-  const sum = slice.reduce((a, r) => a + r[field], 0);
-  return round2(sum / slice.length);
+  return avgField(slice, field);
 }
 
 // MTD / YTD always computed against latest available date in the data,
@@ -303,7 +305,24 @@ function averageWindow(zoneCode, mode, profile, refDateISO) {
     });
   }
   if (!slice || slice.length === 0) return null;
-  return round2(slice.reduce((a, r) => a + r[field], 0) / slice.length);
+  return avgField(slice, field);
+}
+
+// Average of a series field, skipping nulls. If all are null (e.g. partial
+// day with no peak hours yet published), falls back to the mean column so
+// the map still colors the zone instead of showing it grey.
+function avgField(slice, field) {
+  let sum = 0, n = 0;
+  for (const r of slice) {
+    if (r[field] != null) { sum += r[field]; n++; }
+  }
+  if (n > 0) return round2(sum / n);
+  // Fallback: average of mean column (always present)
+  let sumM = 0, nM = 0;
+  for (const r of slice) {
+    if (r.mean != null) { sumM += r.mean; nM++; }
+  }
+  return nM > 0 ? round2(sumM / nM) : null;
 }
 
 // Country-level price = average of all zones with that ISO3
