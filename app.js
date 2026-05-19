@@ -75,8 +75,13 @@ const state = {
   data: null,                 // generated mock data: Map<zone, [ {date, mean, peak, offpeak} ]>
   geo: null,                  // loaded TopoJSON
   borders: null,              // Map< `${border}|${direction}|${date}` -> row >
-  borderMetric: 'spread',     // 'spread' | 'marginal'
 };
+
+// Cross-border arrow labels show JAO marginal price (€/MW) for v1 — the
+// most direct "what does capacity cost on this border" number. The tooltip
+// still surfaces DAM spread + rent for context. Toggle is intentionally
+// absent to keep the headline reading single-valued.
+const ARROW_METRIC = 'marginal';
 
 // =============================================================
 // Init
@@ -184,16 +189,6 @@ function bindUI() {
     state.profile = e.target.value;
     rerender();
   });
-
-  // Border metric (Spread / Marginal) — affects only the cross-border arrows.
-  const bm = document.getElementById('border-metric');
-  if (bm) {
-    bm.value = state.borderMetric;
-    bm.addEventListener('change', (e) => {
-      state.borderMetric = e.target.value;
-      rerender();
-    });
-  }
 
   // Day picker
   const dateInput = document.getElementById('dam-date');
@@ -553,12 +548,9 @@ function renderBorderArrows(svg, euFeatures, path) {
 
   const layer = svg.append('g').attr('class', 'arrows-layer');
 
-  // Per-marker defs so arrowheads inherit their stroke color
+  // Arrowheads tinted to match the line color (only the two we use in v1)
   const defs = layer.append('defs');
   const markers = [
-    { id: 'arr-pos',    color: '#c52f2f' },
-    { id: 'arr-neg',    color: '#1f8a2c' },
-    { id: 'arr-flat',   color: '#8a93a0' },
     { id: 'arr-marg',   color: '#2b6cb0' },
     { id: 'arr-nodata', color: '#cdd2da' },
   ];
@@ -618,12 +610,9 @@ function drawDirectedArrow(layer, from, to, row, dirLabel, parity) {
   const ex = x2 - ux * shrink + px * ox;
   const ey = y2 - uy * shrink + py * ox;
 
-  const v = borderValue(row, state.borderMetric, state.profile);
-  const cls = arrowColorClass(v, state.borderMetric);
-  const markerId = 'arr-' + (cls === 'pos' ? 'pos'
-                           : cls === 'neg' ? 'neg'
-                           : cls === 'flat' ? 'flat'
-                           : cls === 'marg' ? 'marg' : 'nodata');
+  const v = borderValue(row, ARROW_METRIC, state.profile);
+  const cls = arrowColorClass(v, ARROW_METRIC);
+  const markerId = 'arr-' + (cls === 'marg' ? 'marg' : 'nodata');
 
   const line = layer.append('line')
     .attr('class', 'border-arrow-line ' + cls)
@@ -646,7 +635,7 @@ function drawDirectedArrow(layer, from, to, row, dirLabel, parity) {
   // Push out a bit further on the perpendicular so it sits clear of the arrow.
   const mx = (sx + ex) / 2 + px * parity * 4;
   const my = (sy + ey) / 2 + py * parity * 4;
-  const labelText = fmtArrowValue(v, state.borderMetric);
+  const labelText = fmtArrowValue(v, ARROW_METRIC);
   layer.append('text')
     .attr('class', 'border-arrow-label' + (v === null ? ' nodata' : ''))
     .attr('x', mx).attr('y', my)
