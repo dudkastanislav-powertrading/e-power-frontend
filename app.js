@@ -31,6 +31,38 @@ const ZONES = [
 // Set of ISO3 codes we actually colorize on the map (union of zone iso3)
 const COLORED_ISO3 = new Set(ZONES.map(z => z.iso3));
 
+// Zone code → ISO3 mapping. Extends ZONES so we can also locate countries
+// that have a JAO border but no DAM zone in our DB (MD, BA, ME, MK).
+const ZONE_TO_ISO3 = {
+  ...Object.fromEntries(ZONES.map(z => [z.code, z.iso3])),
+  // additional zones that appear only in JAO directions
+  MD: 'MDA',
+  BA: 'BIH',
+  ME: 'MNE',
+  MK: 'MKD',
+};
+
+// Border list: which physical borders to draw arrows for.
+// `border` is the alpha-sorted key used by JAO (matches curated.cross_border_auction.border).
+// Each border gets TWO arrows — one row per direction in the DB.
+const BORDERS_TO_RENDER = [
+  // UA — post-2022 synchronous coupling with ENTSO-E continental grid
+  { border: 'PL-UA', zones: ['PL', 'UA'] },
+  { border: 'SK-UA', zones: ['SK', 'UA'] },
+  { border: 'HU-UA', zones: ['HU', 'UA'] },
+  { border: 'RO-UA', zones: ['RO', 'UA'] },
+  { border: 'MD-UA', zones: ['MD', 'UA'] },
+  // RS — DAM both sides available for HU/RO/BG/HR
+  { border: 'HU-RS', zones: ['HU', 'RS'] },
+  { border: 'RO-RS', zones: ['RO', 'RS'] },
+  { border: 'BG-RS', zones: ['BG', 'RS'] },
+  { border: 'HR-RS', zones: ['HR', 'RS'] },
+  // RS — DAM unavailable on one side; arrow falls back to JAO marginal
+  { border: 'BA-RS', zones: ['BA', 'RS'] },
+  { border: 'ME-RS', zones: ['ME', 'RS'] },
+  { border: 'MK-RS', zones: ['MK', 'RS'] },
+];
+
 // =============================================================
 // State
 // =============================================================
@@ -39,9 +71,11 @@ const state = {
   date: todayISO(),           // selected day for mode=day
   rangeFrom: null,
   rangeTo: null,
-  profile: 'baseload',        // baseload | peak | offpeak
+  profile: 'baseload',        // baseload | peak | offpeak (+ TB2/TB4 when parallel task lands)
   data: null,                 // generated mock data: Map<zone, [ {date, mean, peak, offpeak} ]>
   geo: null,                  // loaded TopoJSON
+  borders: null,              // Map< `${border}|${direction}|${date}` -> row >
+  borderMetric: 'spread',     // 'spread' | 'marginal'
 };
 
 // =============================================================
@@ -69,6 +103,25 @@ async function loadRealData() {
   const dailyPath = './data/' + manifest.datasets.dam_daily.path;
   const daily = await fetch(dailyPath, { cache: 'no-cache' })  // fixed
     .then(r => { if (!r.ok) throw new Error('dam_daily 404'); return r.json(); });
+
+  // Borders are optional — the daily snapshot may run before the JAO ETL
+  // catches up. Treat 404 / bad JSON as "no borders" rather than fatal.
+  try {
+    if (manifest.datasets && manifest.datasets.borders) {
+      const bpath = './data/' + manifest.datasets.borders.path;
+      const bres = await fetch(bpath, { cache: 'no-cache' });
+      if (bres.ok) {
+        const bjson = await bres.json();
+        const bmap = new Map();
+        for (const r of (bjson.rows || [])) {
+          bmap.set(`${r.b}|${r.dir}|${r.d}`, r);
+        }
+        state.borders = bmap;
+      }
+    }
+  } catch (e) {
+    console.warn('borders.json load failed (non-fatal):', e);
+  }
 
   // Reshape: { zone -> [ {date, mean, peak, offpeak} ] }
   // Schema v2: rows are { z, d, m, p, o } compact form. v1: { zone, date, mean_eur, ... }
@@ -131,6 +184,16 @@ function bindUI() {
     state.profile = e.target.value;
     rerender();
   });
+
+  // Border metric (Spread / Marginal) — affects only the cross-border arrows.
+  const bm = document.getElementById('border-metric');
+  if (bm) {
+    bm.value = state.borderMetric;
+    bm.addEventListener('change', (e) => {
+      state.borderMetric = e.target.value;
+      rerender();
+    });
+  }
 
   // Day picker
   const dateInput = document.getElementById('dam-date');
@@ -433,8 +496,163 @@ function renderMap() {
            .text(v == null ? '—' : fmt(v) + ' €');
       });
 
+  // Cross-border arrows (drawn on top of country shapes so labels stay readable)
+  renderBorderArrows(svg, eu, path);
+
   // Legend
   renderLegend(colorScale);
+}
+
+// =============================================================
+// Cross-border arrow rendering
+// =============================================================
+
+// Pick the field on a border row corresponding to (metric, profile).
+// Returns null if the row lacks that field. Unknown profile (e.g. tb2/tb4 –
+// arriving with the parallel task) silently maps to null, which shows as
+// dashed "—" arrows instead of erroring.
+function borderValue(row, metric, profile) {
+  if (!row) return null;
+  const map = metric === 'marginal'
+    ? { baseload: 'mb', peak: 'mp', offpeak: 'mo' }
+    : { baseload: 'sb', peak: 'sp', offpeak: 'so' };
+  const key = map[profile];
+  if (!key) return null;
+  const v = row[key];
+  return (v === null || v === undefined) ? null : v;
+}
+
+// Format an arrow label. Spread is EUR/MWh; marginal is EUR/MW. Both are
+// quite small numbers — 0..30 typical — so 1 decimal is enough.
+function fmtArrowValue(v, metric) {
+  if (v === null) return '—';
+  const abs = Math.abs(v);
+  const digits = abs >= 100 ? 0 : (abs >= 10 ? 1 : 2);
+  const sign = (metric === 'spread' && v > 0) ? '+' : (v < 0 ? '−' : '');
+  return sign + abs.toLocaleString('en-GB', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+function arrowColorClass(v, metric) {
+  if (v === null) return 'nodata';
+  if (metric === 'marginal') return 'marg';
+  // Spread: red if positive (importer side more expensive), green if negative
+  if (Math.abs(v) < 0.5) return 'flat';
+  return v > 0 ? 'pos' : 'neg';
+}
+
+function renderBorderArrows(svg, euFeatures, path) {
+  // Map ISO3 -> projected centroid (only for features the projection
+  // returns finite coords for — Mercator can blow up near the poles).
+  const iso2centroid = new Map();
+  for (const f of euFeatures) {
+    const iso3 = isoNum2Iso3[f.id];
+    if (!iso3) continue;
+    const c = path.centroid(f);
+    if (c && isFinite(c[0]) && isFinite(c[1])) iso2centroid.set(iso3, c);
+  }
+
+  const layer = svg.append('g').attr('class', 'arrows-layer');
+
+  // Per-marker defs so arrowheads inherit their stroke color
+  const defs = layer.append('defs');
+  const markers = [
+    { id: 'arr-pos',    color: '#c52f2f' },
+    { id: 'arr-neg',    color: '#1f8a2c' },
+    { id: 'arr-flat',   color: '#8a93a0' },
+    { id: 'arr-marg',   color: '#2b6cb0' },
+    { id: 'arr-nodata', color: '#cdd2da' },
+  ];
+  for (const m of markers) {
+    defs.append('marker')
+      .attr('id', m.id)
+      .attr('viewBox', '0 0 10 10')
+      .attr('refX', 8).attr('refY', 5)
+      .attr('markerWidth', 6).attr('markerHeight', 6)
+      .attr('orient', 'auto-start-reverse')
+      .append('path')
+        .attr('d', 'M0,0 L10,5 L0,10 Z')
+        .attr('fill', m.color);
+  }
+
+  for (const b of BORDERS_TO_RENDER) {
+    const [zA, zB] = b.zones;
+    const isoA = ZONE_TO_ISO3[zA], isoB = ZONE_TO_ISO3[zB];
+    const cA = iso2centroid.get(isoA), cB = iso2centroid.get(isoB);
+    if (!cA || !cB) continue; // country not in viewport — skip silently
+
+    // Direction in JAO is "FROM>TO". Two rows per border, one each way.
+    const dirAB = `${zA}>${zB}`;
+    const dirBA = `${zB}>${zA}`;
+    const keyAB = `${b.border}|${dirAB}|${state.date}`;
+    const keyBA = `${b.border}|${dirBA}|${state.date}`;
+    const rowAB = state.borders ? state.borders.get(keyAB) : null;
+    const rowBA = state.borders ? state.borders.get(keyBA) : null;
+
+    drawDirectedArrow(layer, cA, cB, rowAB, dirAB, +1);
+    drawDirectedArrow(layer, cB, cA, rowBA, dirBA, -1);
+  }
+}
+
+// Draw one directional arrow from `from` centroid to `to` centroid, offset
+// perpendicular so the opposing direction sits on the other side of the
+// midline (parity = ±1 picks the side).
+function drawDirectedArrow(layer, from, to, row, dirLabel, parity) {
+  const [x1, y1] = from;
+  const [x2, y2] = to;
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (len < 8) return; // centroids too close — skip (e.g. small enclaves)
+
+  // Unit vector along the line, and perpendicular
+  const ux = dx / len, uy = dy / len;
+  const px = -uy, py = ux;          // perpendicular (left-hand)
+
+  // Pull arrow endpoints inward so they don't punch the centroid labels.
+  // 18% shrink on each end works across the typical 80..220 px lengths
+  // we see between European country centroids in this projection.
+  const shrink = Math.min(60, len * 0.18);
+  const ox = parity * 7;             // perpendicular offset (px)
+
+  const sx = x1 + ux * shrink + px * ox;
+  const sy = y1 + uy * shrink + py * ox;
+  const ex = x2 - ux * shrink + px * ox;
+  const ey = y2 - uy * shrink + py * ox;
+
+  const v = borderValue(row, state.borderMetric, state.profile);
+  const cls = arrowColorClass(v, state.borderMetric);
+  const markerId = 'arr-' + (cls === 'pos' ? 'pos'
+                           : cls === 'neg' ? 'neg'
+                           : cls === 'flat' ? 'flat'
+                           : cls === 'marg' ? 'marg' : 'nodata');
+
+  const line = layer.append('line')
+    .attr('class', 'border-arrow-line ' + cls)
+    .attr('x1', sx).attr('y1', sy)
+    .attr('x2', ex).attr('y2', ey)
+    .attr('marker-end', `url(#${markerId})`);
+
+  // Tooltip: full breakdown for the direction (regardless of selected metric)
+  const f = (x) => (x === null || x === undefined) ? '—' : x;
+  const tip = row
+    ? `${dirLabel}    (${row.d})\n` +
+      `DAM spread €/MWh — base ${f(row.sb)} · peak ${f(row.sp)} · off ${f(row.so)}\n` +
+      `JAO marginal €/MW — base ${f(row.mb)} · peak ${f(row.mp)} · off ${f(row.mo)}\n` +
+      `auction rent (day): ${f(row.r)} €\n` +
+      `hours: ${row.hc} (mp ${row.hm}, spread ${row.hs})`
+    : `${dirLabel}\nno data for ${state.date}`;
+  line.append('title').text(tip);
+
+  // Label at midpoint of the drawn segment (not the full centroid line).
+  // Push out a bit further on the perpendicular so it sits clear of the arrow.
+  const mx = (sx + ex) / 2 + px * parity * 4;
+  const my = (sy + ey) / 2 + py * parity * 4;
+  const labelText = fmtArrowValue(v, state.borderMetric);
+  layer.append('text')
+    .attr('class', 'border-arrow-label' + (v === null ? ' nodata' : ''))
+    .attr('x', mx).attr('y', my)
+    .attr('dy', '0.35em')
+    .text(labelText)
+    .append('title').text(tip);
 }
 
 function renderLegend(scale) {
