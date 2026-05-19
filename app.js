@@ -475,6 +475,51 @@ function renderMap() {
           return `${f.properties.name}: ${v == null ? 'no data' : fmt(v) + ' €/MWh'}`;
         });
 
+  // Crimea overlay — Natural Earth (the source for world-atlas) draws UA
+  // without Crimea and folds the peninsula into Russia's polygon, which
+  // doesn't match the internationally recognized border. We render a
+  // synthetic Crimea polygon on top, filled with UA's price color, with
+  // no stroke (so no double-outline) and overlap-extended past the
+  // Perekop isthmus into existing UA territory so there's no seam in
+  // the fill. The overlay does NOT extend into Russia mainland (east
+  // edge stays at ~36.65°E, just past Kerch).
+  const uaPriceFill = (() => {
+    const v = getCountryPrice('UKR', state.mode, state.profile);
+    return v == null ? '#e6e8ed' : colorScale(v);
+  })();
+  const crimeaFeature = {
+    type: 'Feature',
+    properties: { name: 'Crimea (Ukraine)', synthetic: true },
+    geometry: {
+      type: 'Polygon',
+      coordinates: [[
+        // overlap northward into mainland UA so no seam shows
+        [33.40, 46.55], [34.50, 46.55],
+        // northern coast / Sea of Azov side
+        [35.10, 46.10], [35.95, 45.95],
+        // Kerch peninsula east tip
+        [36.65, 45.45], [36.20, 45.05],
+        // SE → south coast (Yalta) → SW (Sevastopol)
+        [34.95, 44.78], [34.10, 44.40], [33.45, 44.50],
+        // western Tarkhankut peninsula
+        [32.50, 45.15], [33.10, 45.55],
+        // close ring
+        [33.40, 46.55],
+      ]],
+    },
+  };
+  g.append('path')
+    .datum(crimeaFeature)
+    .attr('d', path)
+    .attr('class', 'country-path crimea-overlay has-data')
+    .attr('fill', uaPriceFill)
+    .attr('stroke', 'none')
+    .append('title')
+      .text(() => {
+        const v = getCountryPrice('UKR', state.mode, state.profile);
+        return `Ukraine (incl. Crimea): ${v == null ? 'no data' : fmt(v) + ' €/MWh'}`;
+      });
+
   // Country labels (only for zones we colorize) — always black bold for contrast
   svg.append('g').attr('class', 'labels-layer')
     .selectAll('text')
