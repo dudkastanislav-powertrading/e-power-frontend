@@ -26,6 +26,10 @@ const ZONES = [
   { code: 'IT-CALA', name: 'Italy Calabria',  iso3: 'ITA', baselevel: 136, vol: 25, season: 0.22, group: 'IT' },
   { code: 'DE-LU',   name: 'Germany–Lux',     iso3: 'DEU', baselevel: 124, vol: 28, season: 0.25, group: 'Western' },
   { code: 'ES',      name: 'Spain',           iso3: 'ESP', baselevel:  72, vol: 30, season: 0.28, group: 'Western' },
+  // Central/Western additions (2026-05-19) — SDAC zones, CET/CEST
+  { code: 'AT',      name: 'Austria',         iso3: 'AUT', baselevel: 121, vol: 26, season: 0.22, group: 'Central' },
+  { code: 'CZ',      name: 'Czechia',         iso3: 'CZE', baselevel: 120, vol: 25, season: 0.20, group: 'Central' },
+  { code: 'FR',      name: 'France',          iso3: 'FRA', baselevel:  95, vol: 28, season: 0.24, group: 'Western' },
 ];
 
 // Set of ISO3 codes we actually colorize on the map (union of zone iso3)
@@ -40,6 +44,26 @@ const ZONE_TO_ISO3 = {
   BA: 'BIH',
   ME: 'MNE',
   MK: 'MKD',
+};
+
+// Hand-tuned border midpoints [lon, lat] — a representative point ON the
+// shared border, at a known crossing where possible. Using these is more
+// reliable than computing topojson.mesh intersections at runtime, and we
+// only have ~12 borders to maintain. Coordinates approximate (±10 km is
+// fine; arrow length is ~40 px regardless).
+const BORDER_MIDPOINTS = {
+  'PL-UA': [23.85, 50.50],   // SE Polish border (Hrubieszów / Lviv region)
+  'SK-UA': [22.30, 48.85],   // Vyšné Nemecké – Uzhhorod
+  'HU-UA': [22.60, 48.40],   // Záhony – Chop
+  'RO-UA': [25.20, 47.95],   // Siret – Porubne (Bukovina)
+  'MD-UA': [28.70, 48.05],   // central MD-UA frontier
+  'HU-RS': [19.45, 46.10],   // Subotica
+  'RO-RS': [22.40, 44.65],   // Iron Gates / Đerdap
+  'BG-RS': [22.55, 43.30],   // Kalotina / Dimitrovgrad
+  'HR-RS': [19.10, 45.20],   // Erdut – Bogojevo
+  'BA-RS': [19.00, 44.40],   // Drina river crossing
+  'ME-RS': [19.50, 43.20],   // Boljare – Brodarevo
+  'MK-RS': [21.65, 42.30],   // Tabanovce – Preševo
 };
 
 // Border list: which physical borders to draw arrows for.
@@ -61,6 +85,18 @@ const BORDERS_TO_RENDER = [
   { border: 'BA-RS', zones: ['BA', 'RS'] },
   { border: 'ME-RS', zones: ['ME', 'RS'] },
   { border: 'MK-RS', zones: ['MK', 'RS'] },
+  // AT/CZ/FR — added 2026-05-19. Active SDAC borders with JAO DA auctions.
+  { border: 'AT-DE-LU',   zones: ['AT', 'DE-LU'] },
+  { border: 'AT-CZ',      zones: ['AT', 'CZ'] },
+  { border: 'AT-HU',      zones: ['AT', 'HU'] },
+  { border: 'AT-SI',      zones: ['AT', 'SI'] },
+  { border: 'AT-IT-NORD', zones: ['AT', 'IT-NORD'] },
+  { border: 'CZ-DE-LU',   zones: ['CZ', 'DE-LU'] },
+  { border: 'CZ-PL',      zones: ['CZ', 'PL'] },
+  { border: 'CZ-SK',      zones: ['CZ', 'SK'] },
+  { border: 'DE-LU-FR',   zones: ['DE-LU', 'FR'] },
+  { border: 'ES-FR',      zones: ['ES', 'FR'] },
+  { border: 'FR-IT-NORD', zones: ['FR', 'IT-NORD'] },
 ];
 
 // =============================================================
@@ -537,7 +573,7 @@ function renderMap() {
       });
 
   // Cross-border arrows (drawn on top of country shapes so labels stay readable)
-  renderBorderArrows(svg, eu, path);
+  renderBorderArrows(svg, eu, path, projection);
 
   // Legend
   renderLegend(colorScale);
@@ -580,9 +616,9 @@ function arrowColorClass(v, metric) {
   return v > 0 ? 'pos' : 'neg';
 }
 
-function renderBorderArrows(svg, euFeatures, path) {
-  // Map ISO3 -> projected centroid (only for features the projection
-  // returns finite coords for — Mercator can blow up near the poles).
+function renderBorderArrows(svg, euFeatures, path, projection) {
+  // Map ISO3 -> projected centroid. Used as a direction hint (which way
+  // is "from A to B" in screen space) — NOT as an arrow endpoint anymore.
   const iso2centroid = new Map();
   for (const f of euFeatures) {
     const iso3 = isoNum2Iso3[f.id];
@@ -597,14 +633,14 @@ function renderBorderArrows(svg, euFeatures, path) {
   const defs = layer.append('defs');
   const markers = [
     { id: 'arr-marg',   color: '#2b6cb0' },
-    { id: 'arr-nodata', color: '#cdd2da' },
+    { id: 'arr-nodata', color: '#9aa3b0' },
   ];
   for (const m of markers) {
     defs.append('marker')
       .attr('id', m.id)
       .attr('viewBox', '0 0 10 10')
       .attr('refX', 8).attr('refY', 5)
-      .attr('markerWidth', 6).attr('markerHeight', 6)
+      .attr('markerWidth', 4.5).attr('markerHeight', 4.5)
       .attr('orient', 'auto-start-reverse')
       .append('path')
         .attr('d', 'M0,0 L10,5 L0,10 Z')
@@ -615,78 +651,105 @@ function renderBorderArrows(svg, euFeatures, path) {
     const [zA, zB] = b.zones;
     const isoA = ZONE_TO_ISO3[zA], isoB = ZONE_TO_ISO3[zB];
     const cA = iso2centroid.get(isoA), cB = iso2centroid.get(isoB);
-    if (!cA || !cB) continue; // country not in viewport — skip silently
+    const midLonLat = BORDER_MIDPOINTS[b.border];
+    if (!cA || !cB || !midLonLat) continue;
 
-    // Direction in JAO is "FROM>TO". Two rows per border, one each way.
+    const m = projection(midLonLat);
+    if (!m || !isFinite(m[0]) || !isFinite(m[1])) continue;
+
     const dirAB = `${zA}>${zB}`;
     const dirBA = `${zB}>${zA}`;
-    const keyAB = `${b.border}|${dirAB}|${state.date}`;
-    const keyBA = `${b.border}|${dirBA}|${state.date}`;
-    const rowAB = state.borders ? state.borders.get(keyAB) : null;
-    const rowBA = state.borders ? state.borders.get(keyBA) : null;
+    const rowAB = state.borders ? state.borders.get(`${b.border}|${dirAB}|${state.date}`) : null;
+    const rowBA = state.borders ? state.borders.get(`${b.border}|${dirBA}|${state.date}`) : null;
 
-    drawDirectedArrow(layer, cA, cB, rowAB, dirAB, +1);
-    drawDirectedArrow(layer, cB, cA, rowBA, dirBA, -1);
+    drawBorderPair(layer, m, cA, cB, rowAB, rowBA, dirAB, dirBA);
   }
 }
 
-// Draw one directional arrow from `from` centroid to `to` centroid, offset
-// perpendicular so the opposing direction sits on the other side of the
-// midline (parity = ±1 picks the side).
-function drawDirectedArrow(layer, from, to, row, dirLabel, parity) {
-  const [x1, y1] = from;
-  const [x2, y2] = to;
-  const dx = x2 - x1, dy = y2 - y1;
-  const len = Math.hypot(dx, dy);
-  if (len < 8) return; // centroids too close — skip (e.g. small enclaves)
+// Draw the pair of short, thick, parallel arrows at the border midpoint.
+//   m    : projected [x, y] of border midpoint
+//   cA   : projected centroid of country A — used only for direction
+//   cB   : projected centroid of country B — used only for direction
+//   rowAB: DB row for direction A→B (or null)
+//   rowBA: DB row for direction B→A (or null)
+function drawBorderPair(layer, m, cA, cB, rowAB, rowBA, dirAB, dirBA) {
+  const [mx, my] = m;
+  const dx = cB[0] - cA[0], dy = cB[1] - cA[1];
+  const dist = Math.hypot(dx, dy);
+  if (dist < 1) return;
 
-  // Unit vector along the line, and perpendicular
-  const ux = dx / len, uy = dy / len;
-  const px = -uy, py = ux;          // perpendicular (left-hand)
+  // Unit vector "across the border" (A→B), and perpendicular (along the border line).
+  const ux = dx / dist, uy = dy / dist;
+  const px = -uy, py = ux;
 
-  // Pull arrow endpoints inward so they don't punch the centroid labels.
-  // 18% shrink on each end works across the typical 80..220 px lengths
-  // we see between European country centroids in this projection.
-  const shrink = Math.min(60, len * 0.18);
-  const ox = parity * 7;             // perpendicular offset (px)
+  const ARROW_LEN     = 38;   // total arrow length in pixels
+  const HALF          = ARROW_LEN / 2;
+  const ARROW_GAP     = 13;   // perpendicular gap between the two parallel arrows
+  const LABEL_OFFSET  = 12;   // perpendicular distance from arrow line to its label
 
-  const sx = x1 + ux * shrink + px * ox;
-  const sy = y1 + uy * shrink + py * ox;
-  const ex = x2 - ux * shrink + px * ox;
-  const ey = y2 - uy * shrink + py * ox;
+  // Arrow A→B sits on the +perpendicular side
+  const aHx = mx + px * (ARROW_GAP / 2);
+  const aHy = my + py * (ARROW_GAP / 2);
+  // Arrow B→A sits on the −perpendicular side
+  const bHx = mx - px * (ARROW_GAP / 2);
+  const bHy = my - py * (ARROW_GAP / 2);
+
+  drawSingleArrow(layer, aHx, aHy, ux, uy, HALF, rowAB, dirAB,
+                  aHx + px * LABEL_OFFSET, aHy + py * LABEL_OFFSET);
+  drawSingleArrow(layer, bHx, bHy, -ux, -uy, HALF, rowBA, dirBA,
+                  bHx - px * LABEL_OFFSET, bHy - py * LABEL_OFFSET);
+}
+
+// Single short arrow: centered at (cx, cy), oriented along unit (ux, uy),
+// 2*half pixels long. Label drawn at (labelX, labelY).
+function drawSingleArrow(layer, cx, cy, ux, uy, half, row, dirLabel, labelX, labelY) {
+  const sx = cx - ux * half, sy = cy - uy * half;
+  const ex = cx + ux * half, ey = cy + uy * half;
 
   const v = borderValue(row, ARROW_METRIC, state.profile);
   const cls = arrowColorClass(v, ARROW_METRIC);
   const markerId = 'arr-' + (cls === 'marg' ? 'marg' : 'nodata');
 
-  const line = layer.append('line')
+  layer.append('line')
     .attr('class', 'border-arrow-line ' + cls)
     .attr('x1', sx).attr('y1', sy)
     .attr('x2', ex).attr('y2', ey)
-    .attr('marker-end', `url(#${markerId})`);
+    .attr('marker-end', `url(#${markerId})`)
+    .append('title').text(tipFor(row, dirLabel));
 
-  // Tooltip: full breakdown for the direction (regardless of selected metric)
+  // Label sits in its own group with a small rounded rect behind the text
+  // so it stays readable even when it lands over a colored country fill.
+  const labelText = fmtArrowValue(v, ARROW_METRIC);
+  const grp = layer.append('g').attr('class', 'border-arrow-label-grp')
+    .attr('transform', `translate(${labelX},${labelY})`);
+  // Width is text-content-dependent — we approximate with monospace digits
+  // (4 char max, e.g. "12.3", "—", "+143") then refine after measuring.
+  const text = grp.append('text')
+    .attr('class', 'border-arrow-label' + (v === null ? ' nodata' : ''))
+    .attr('dy', '0.35em')
+    .text(labelText);
+  // Insert background rect behind the text using the text's actual bbox
+  try {
+    const bb = text.node().getBBox();
+    grp.insert('rect', 'text')
+      .attr('class', 'border-arrow-label-bg' + (v === null ? ' nodata' : ''))
+      .attr('x', bb.x - 3).attr('y', bb.y - 1.5)
+      .attr('width', bb.width + 6).attr('height', bb.height + 3)
+      .attr('rx', 3).attr('ry', 3);
+  } catch (_) { /* getBBox unavailable in some test envs — harmless */ }
+  grp.append('title').text(tipFor(row, dirLabel));
+}
+
+// Tooltip text builder — shared by line + label so hovering either works.
+function tipFor(row, dirLabel) {
   const f = (x) => (x === null || x === undefined) ? '—' : x;
-  const tip = row
+  return row
     ? `${dirLabel}    (${row.d})\n` +
-      `DAM spread €/MWh — base ${f(row.sb)} · peak ${f(row.sp)} · off ${f(row.so)}\n` +
       `JAO marginal €/MW — base ${f(row.mb)} · peak ${f(row.mp)} · off ${f(row.mo)}\n` +
+      `DAM spread €/MWh — base ${f(row.sb)} · peak ${f(row.sp)} · off ${f(row.so)}\n` +
       `auction rent (day): ${f(row.r)} €\n` +
       `hours: ${row.hc} (mp ${row.hm}, spread ${row.hs})`
     : `${dirLabel}\nno data for ${state.date}`;
-  line.append('title').text(tip);
-
-  // Label at midpoint of the drawn segment (not the full centroid line).
-  // Push out a bit further on the perpendicular so it sits clear of the arrow.
-  const mx = (sx + ex) / 2 + px * parity * 4;
-  const my = (sy + ey) / 2 + py * parity * 4;
-  const labelText = fmtArrowValue(v, ARROW_METRIC);
-  layer.append('text')
-    .attr('class', 'border-arrow-label' + (v === null ? ' nodata' : ''))
-    .attr('x', mx).attr('y', my)
-    .attr('dy', '0.35em')
-    .text(labelText)
-    .append('title').text(tip);
 }
 
 function renderLegend(scale) {
