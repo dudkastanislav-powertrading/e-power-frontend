@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>E-Power — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=12" />
+  <link rel="stylesheet" href="style.css?v=13" />
 </head>
 <body>
   <header class="topbar">
@@ -37,20 +37,40 @@
           <label for="dam-date">Day</label>
           <input type="date" id="dam-date" />
         </div>
+        <div class="control-group hidden" id="control-month">
+          <label for="dam-month">Month</label>
+          <select id="dam-month"></select>
+        </div>
+        <div class="control-group hidden" id="control-year">
+          <label for="dam-year">Year</label>
+          <select id="dam-year"></select>
+        </div>
+        <div class="control-group hidden" id="control-fullyear">
+          <label>&nbsp;</label>
+          <button type="button" id="dam-fullyear-toggle" class="toggle-btn" aria-pressed="false">
+            Full year
+          </button>
+        </div>
         <div class="control-group hidden" id="control-custom">
           <label>From</label>
           <input type="date" id="dam-from" />
           <label>To</label>
           <input type="date" id="dam-to" />
         </div>
-        <div class="control-group">
-          <label>Profile</label>
-          <select id="dam-profile">
-            <option value="baseload">Base load (24h avg)</option>
-            <option value="peak">Peak (8–20 CET)</option>
-            <option value="offpeak">Off-peak (rest)</option>
-          </select>
-        </div>
+      </div>
+
+      <div class="profile-bar" role="tablist" aria-label="Price profile">
+        <span class="profile-bar-label">Profile</span>
+        <button type="button" class="profile-btn active" data-profile="baseload"
+                title="Average of all 24 hours (CET 1..24)">Baseload</button>
+        <button type="button" class="profile-btn" data-profile="peak"
+                title="Average of CET hours 9..20">Peak</button>
+        <button type="button" class="profile-btn" data-profile="offpeak"
+                title="Average of CET hours 1..8 + 21..24">Off-peak</button>
+        <button type="button" class="profile-btn" data-profile="tb2"
+                title="Top-2 consecutive hours minus bottom-2 — 2h battery spread">TB2</button>
+        <button type="button" class="profile-btn" data-profile="tb4"
+                title="Top-4 consecutive hours minus bottom-4 — 4h battery spread">TB4</button>
       </div>
 
       <div class="map-title-row">
@@ -97,6 +117,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=12" type="module"></script>
+  <script src="app.js?v=13" type="module"></script>
 </body>
 </html>

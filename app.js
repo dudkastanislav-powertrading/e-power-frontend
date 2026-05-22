@@ -105,10 +105,15 @@ const BORDERS_TO_RENDER = [
 const state = {
   mode: 'day',                // day | mtd | ytd | custom
   date: todayISO(),           // selected day for mode=day
+  // year/monthIdx track the active selection for MTD / YTD modes.
+  // monthIdx is 0..11 (Date.getUTCMonth() convention).
+  year: new Date().getUTCFullYear(),
+  monthIdx: new Date().getUTCMonth(),
+  fullYear: false,            // YTD mode: false = running YTD, true = whole calendar year
   rangeFrom: null,
   rangeTo: null,
-  profile: 'baseload',        // baseload | peak | offpeak (+ TB2/TB4 when parallel task lands)
-  data: null,                 // generated mock data: Map<zone, [ {date, mean, peak, offpeak} ]>
+  profile: 'baseload',        // baseload | peak | offpeak | tb2 | tb4
+  data: null,                 // Map<zone, [ {date, mean, peak, offpeak, tb2, tb4} ]>
   geo: null,                  // loaded TopoJSON
   borders: null,              // Map< `${border}|${direction}|${date}` -> row >
 };
@@ -164,14 +169,19 @@ async function loadRealData() {
     console.warn('borders.json load failed (non-fatal):', e);
   }
 
-  // Reshape: { zone -> [ {date, mean, peak, offpeak} ] }
-  // Schema v2: rows are { z, d, m, p, o } compact form. v1: { zone, date, mean_eur, ... }
-  const v2 = (daily.schema_version === 2);
-  const fZone = v2 ? 'z' : 'zone';
-  const fDate = v2 ? 'd' : 'date';
-  const fMean = v2 ? 'm' : 'mean_eur';
-  const fPeak = v2 ? 'p' : 'peak_eur';
-  const fOff  = v2 ? 'o' : 'offpeak_eur';
+  // Reshape: { zone -> [ {date, mean, peak, offpeak, tb2, tb4} ] }
+  // Schema v3: rows are { z, d, m, p, o, t2, t4 }
+  // Schema v2: rows are { z, d, m, p, o } (TB2/TB4 unavailable)
+  // Schema v1: { zone, date, mean_eur, peak_eur, offpeak_eur }
+  const sv = daily.schema_version || 1;
+  const compact = (sv >= 2);
+  const fZone = compact ? 'z' : 'zone';
+  const fDate = compact ? 'd' : 'date';
+  const fMean = compact ? 'm' : 'mean_eur';
+  const fPeak = compact ? 'p' : 'peak_eur';
+  const fOff  = compact ? 'o' : 'offpeak_eur';
+  const fTb2  = sv >= 3 ? 't2' : null;
+  const fTb4  = sv >= 3 ? 't4' : null;
   const map = new Map();
   for (const r of daily.rows) {
     const z = r[fZone];
@@ -181,6 +191,8 @@ async function loadRealData() {
       mean: r[fMean],
       peak: r[fPeak],
       offpeak: r[fOff],
+      tb2: fTb2 ? r[fTb2] : null,
+      tb4: fTb4 ? r[fTb4] : null,
     });
   }
   state.data = map;
@@ -196,6 +208,15 @@ async function loadRealData() {
     state.date = maxDate;
     const di = document.getElementById('dam-date');
     di.value = maxDate; di.max = maxDate;
+    // Sync month/year pickers to the latest available month so opening
+    // MTD/YTD tabs shows current data instead of a future-empty month.
+    const md = parseISO(maxDate);
+    state.year = md.getUTCFullYear();
+    state.monthIdx = md.getUTCMonth();
+    const monthSel = document.getElementById('dam-month');
+    const yearSel  = document.getElementById('dam-year');
+    if (monthSel) monthSel.value = `${state.year}-${String(state.monthIdx + 1).padStart(2, '0')}`;
+    if (yearSel)  yearSel.value  = String(state.year);
   }
 
   const ts = manifest.generated_at || daily.generated_at;
@@ -220,10 +241,14 @@ function bindUI() {
     });
   });
 
-  // Profile select
-  document.getElementById('dam-profile').addEventListener('change', (e) => {
-    state.profile = e.target.value;
-    rerender();
+  // Profile buttons
+  document.querySelectorAll('.profile-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.profile-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.profile = btn.dataset.profile;
+      rerender();
+    });
   });
 
   // Day picker
@@ -233,6 +258,56 @@ function bindUI() {
   dateInput.min = '2021-01-01';
   dateInput.addEventListener('change', (e) => {
     state.date = e.target.value;
+    rerender();
+  });
+
+  // Month picker — last 24 months down to 2021-01
+  const monthSel = document.getElementById('dam-month');
+  monthSel.innerHTML = '';
+  const earliest = new Date(Date.UTC(2021, 0, 1));
+  const now = new Date();
+  const startY = now.getUTCFullYear(), startM = now.getUTCMonth();
+  const months = [];
+  for (let y = startY; y >= earliest.getUTCFullYear(); y--) {
+    const mLast = (y === startY) ? startM : 11;
+    const mFirst = (y === earliest.getUTCFullYear()) ? earliest.getUTCMonth() : 0;
+    for (let m = mLast; m >= mFirst; m--) months.push({ y, m });
+  }
+  for (const { y, m } of months) {
+    const opt = document.createElement('option');
+    opt.value = `${y}-${String(m + 1).padStart(2, '0')}`;
+    opt.textContent = new Date(Date.UTC(y, m, 1))
+      .toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    monthSel.appendChild(opt);
+  }
+  monthSel.value = `${state.year}-${String(state.monthIdx + 1).padStart(2, '0')}`;
+  monthSel.addEventListener('change', (e) => {
+    const [y, m] = e.target.value.split('-').map(Number);
+    state.year = y;
+    state.monthIdx = m - 1;
+    rerender();
+  });
+
+  // Year picker — 2021..current
+  const yearSel = document.getElementById('dam-year');
+  yearSel.innerHTML = '';
+  for (let y = startY; y >= earliest.getUTCFullYear(); y--) {
+    const opt = document.createElement('option');
+    opt.value = String(y);
+    opt.textContent = String(y);
+    yearSel.appendChild(opt);
+  }
+  yearSel.value = String(state.year);
+  yearSel.addEventListener('change', (e) => {
+    state.year = Number(e.target.value);
+    rerender();
+  });
+
+  // Full-year toggle (YTD mode)
+  const fyBtn = document.getElementById('dam-fullyear-toggle');
+  fyBtn.addEventListener('click', () => {
+    state.fullYear = !state.fullYear;
+    fyBtn.setAttribute('aria-pressed', String(state.fullYear));
     rerender();
   });
 
@@ -277,7 +352,14 @@ function bindUI() {
 }
 
 function toggleControls() {
+  // Day picker — shown in Day and Custom modes (Custom uses from/to, Day just date)
   document.getElementById('control-day').classList.toggle('hidden', state.mode !== 'day');
+  // Month picker — shown in MTD mode
+  document.getElementById('control-month').classList.toggle('hidden', state.mode !== 'mtd');
+  // Year picker + Full-year toggle — shown in YTD mode
+  document.getElementById('control-year').classList.toggle('hidden', state.mode !== 'ytd');
+  document.getElementById('control-fullyear').classList.toggle('hidden', state.mode !== 'ytd');
+  // Custom from/to
   document.getElementById('control-custom').classList.toggle('hidden', state.mode !== 'custom');
 }
 
@@ -339,32 +421,54 @@ function generateMockData() {
 // =============================================================
 // Aggregation logic
 // =============================================================
+// Map a profile key to the field name on a daily row.
+function profileField(profile) {
+  switch (profile) {
+    case 'peak':    return 'peak';
+    case 'offpeak': return 'offpeak';
+    case 'tb2':     return 'tb2';
+    case 'tb4':     return 'tb4';
+    case 'baseload':
+    default:        return 'mean';
+  }
+}
+
 function getZonePrice(zoneCode, mode, profile) {
   const series = state.data.get(zoneCode);
   if (!series || series.length === 0) return null;
-  const field = profile === 'peak' ? 'peak' : profile === 'offpeak' ? 'offpeak' : 'mean';
+  const field = profileField(profile);
   let slice;
   if (mode === 'day') {
     const row = series.find(r => r.date === state.date);
     if (!row) return null;
-    // peak/offpeak may be null on a partial day (DAM not yet fully published).
-    // Fall back to mean so the map still shows a color for the zone.
-    return row[field] != null ? row[field] : row.mean;
+    // Fall back to mean only for peak/offpeak — TB2/TB4 are not derivable
+    // from the mean, so they show as "no data" if absent on the row.
+    if (row[field] != null) return row[field];
+    if (field === 'peak' || field === 'offpeak') return row.mean;
+    return null;
   }
   if (mode === 'mtd') {
-    const ref = parseISO(state.date);
-    const month = ref.getUTCMonth(), year = ref.getUTCFullYear();
+    // Use state.year/monthIdx (set by the month picker) instead of
+    // deriving from state.date, so MTD can stand on its own.
     slice = series.filter(r => {
       const d = parseISO(r.date);
-      return d.getUTCMonth() === month && d.getUTCFullYear() === year && d <= ref;
+      return d.getUTCMonth() === state.monthIdx
+          && d.getUTCFullYear() === state.year;
     });
+    // For the current month, cap at today (running MTD)
+    const today = parseISO(todayISO());
+    if (state.year === today.getUTCFullYear() && state.monthIdx === today.getUTCMonth()) {
+      slice = slice.filter(r => parseISO(r.date) <= today);
+    }
   } else if (mode === 'ytd') {
-    const ref = parseISO(state.date);
-    const year = ref.getUTCFullYear();
-    slice = series.filter(r => {
-      const d = parseISO(r.date);
-      return d.getUTCFullYear() === year && d <= ref;
-    });
+    slice = series.filter(r => parseISO(r.date).getUTCFullYear() === state.year);
+    if (!state.fullYear) {
+      // Running YTD: trim to today (if selected year is current year)
+      const today = parseISO(todayISO());
+      if (state.year === today.getUTCFullYear()) {
+        slice = slice.filter(r => parseISO(r.date) <= today);
+      }
+    }
   } else if (mode === 'custom') {
     if (!state.rangeFrom || !state.rangeTo) return null;
     slice = series.filter(r => r.date >= state.rangeFrom && r.date <= state.rangeTo);
@@ -384,7 +488,7 @@ function getZonePriceYTD(zoneCode) {
 function averageWindow(zoneCode, mode, profile, refDateISO) {
   const series = state.data.get(zoneCode);
   if (!series) return null;
-  const field = profile === 'peak' ? 'peak' : profile === 'offpeak' ? 'offpeak' : 'mean';
+  const field = profileField(profile);
   const ref = parseISO(refDateISO);
   let slice;
   if (mode === 'mtd') {
@@ -402,16 +506,18 @@ function averageWindow(zoneCode, mode, profile, refDateISO) {
   return avgField(slice, field);
 }
 
-// Average of a series field, skipping nulls. If all are null (e.g. partial
-// day with no peak hours yet published), falls back to the mean column so
-// the map still colors the zone instead of showing it grey.
+// Average of a series field, skipping nulls.
+// peak/offpeak fall back to mean when all values are null (partial day);
+// tb2/tb4 do NOT fall back — they're a derived metric, not a substitute
+// for mean, so it would be misleading.
 function avgField(slice, field) {
   let sum = 0, n = 0;
   for (const r of slice) {
     if (r[field] != null) { sum += r[field]; n++; }
   }
   if (n > 0) return round2(sum / n);
-  // Fallback: average of mean column (always present)
+  if (field !== 'peak' && field !== 'offpeak') return null;
+  // Fallback for peak/offpeak only: average of mean column.
   let sumM = 0, nM = 0;
   for (const r of slice) {
     if (r.mean != null) { sumM += r.mean; nM++; }
@@ -457,11 +563,22 @@ function rerender() {
 
 function updateMapTitle() {
   const el = document.getElementById('map-title');
+  const profileLabel = ({
+    baseload: 'baseload', peak: 'peak', offpeak: 'off-peak',
+    tb2: 'TB2 spread', tb4: 'TB4 spread',
+  })[state.profile] || state.profile;
   let label;
-  if (state.mode === 'day') label = `Day-ahead ${state.profile} prices for ${state.date}`;
-  else if (state.mode === 'mtd') label = `Day-ahead ${state.profile} prices · month-to-date (${monthYearLabel(state.date)})`;
-  else if (state.mode === 'ytd') label = `Day-ahead ${state.profile} prices · year-to-date (${parseISO(state.date).getUTCFullYear()})`;
-  else label = `Day-ahead ${state.profile} prices · ${state.rangeFrom} → ${state.rangeTo}`;
+  if (state.mode === 'day') {
+    label = `Day-ahead ${profileLabel} prices for ${state.date}`;
+  } else if (state.mode === 'mtd') {
+    const monthName = new Date(Date.UTC(state.year, state.monthIdx, 1))
+      .toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    label = `Day-ahead ${profileLabel} prices · month-to-date (${monthName})`;
+  } else if (state.mode === 'ytd') {
+    label = `Day-ahead ${profileLabel} prices · ${state.fullYear ? `full year ${state.year}` : `year-to-date (${state.year})`}`;
+  } else {
+    label = `Day-ahead ${profileLabel} prices · ${state.rangeFrom} → ${state.rangeTo}`;
+  }
   el.textContent = label;
 }
 
@@ -590,8 +707,8 @@ function renderMap() {
 function borderValue(row, metric, profile) {
   if (!row) return null;
   const map = metric === 'marginal'
-    ? { baseload: 'mb', peak: 'mp', offpeak: 'mo' }
-    : { baseload: 'sb', peak: 'sp', offpeak: 'so' };
+    ? { baseload: 'mb', peak: 'mp', offpeak: 'mo', tb2: 'm2', tb4: 'm4' }
+    : { baseload: 'sb', peak: 'sp', offpeak: 'so' /* spread TB2/TB4 not in schema yet */ };
   const key = map[profile];
   if (!key) return null;
   const v = row[key];
@@ -746,7 +863,8 @@ function tipFor(row, dirLabel) {
   return row
     ? `${dirLabel}    (${row.d})\n` +
       `JAO marginal €/MW — base ${f(row.mb)} · peak ${f(row.mp)} · off ${f(row.mo)}\n` +
-      `DAM spread €/MWh — base ${f(row.sb)} · peak ${f(row.sp)} · off ${f(row.so)}\n` +
+      `JAO marginal TB —   TB2 ${f(row.m2)} · TB4 ${f(row.m4)}\n` +
+      `DAM spread €/MWh —  base ${f(row.sb)} · peak ${f(row.sp)} · off ${f(row.so)}\n` +
       `auction rent (day): ${f(row.r)} €\n` +
       `hours: ${row.hc} (mp ${row.hm}, spread ${row.hs})`
     : `${dirLabel}\nno data for ${state.date}`;
