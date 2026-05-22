@@ -598,12 +598,17 @@ function borderValue(row, metric, profile) {
   return (v === null || v === undefined) ? null : v;
 }
 
-// Format an arrow label. Spread is EUR/MWh; marginal is EUR/MW. Both are
-// quite small numbers — 0..30 typical — so 1 decimal is enough.
+// Format an arrow label tight enough to fit on the arrow body.
+// Marginal is always positive; spread is signed. Examples: 0.8, 3.7, 12, 143.
 function fmtArrowValue(v, metric) {
-  if (v === null) return '—';
+  if (v === null || v === undefined) return '—';
   const abs = Math.abs(v);
-  const digits = abs >= 100 ? 0 : (abs >= 10 ? 1 : 2);
+  let digits;
+  if (abs >= 100)      digits = 0;
+  else if (abs >= 10)  digits = 0;
+  else if (abs >= 1)   digits = 1;
+  else                 digits = 2;            // sub-1 values get 2 decimals so "0.8" not "0.81"
+  if (abs < 1 && abs > 0) digits = 1;          // override: keep all sub-1 to 1 decimal
   const sign = (metric === 'spread' && v > 0) ? '+' : (v < 0 ? '−' : '');
   return sign + abs.toLocaleString('en-GB', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
@@ -617,8 +622,7 @@ function arrowColorClass(v, metric) {
 }
 
 function renderBorderArrows(svg, euFeatures, path, projection) {
-  // Map ISO3 -> projected centroid. Used as a direction hint (which way
-  // is "from A to B" in screen space) — NOT as an arrow endpoint anymore.
+  // Map ISO3 -> projected centroid. Used as a direction hint only.
   const iso2centroid = new Map();
   for (const f of euFeatures) {
     const iso3 = isoNum2Iso3[f.id];
@@ -628,24 +632,6 @@ function renderBorderArrows(svg, euFeatures, path, projection) {
   }
 
   const layer = svg.append('g').attr('class', 'arrows-layer');
-
-  // Arrowheads tinted to match the line color (only the two we use in v1)
-  const defs = layer.append('defs');
-  const markers = [
-    { id: 'arr-marg',   color: '#2b6cb0' },
-    { id: 'arr-nodata', color: '#9aa3b0' },
-  ];
-  for (const m of markers) {
-    defs.append('marker')
-      .attr('id', m.id)
-      .attr('viewBox', '0 0 10 10')
-      .attr('refX', 8).attr('refY', 5)
-      .attr('markerWidth', 4.5).attr('markerHeight', 4.5)
-      .attr('orient', 'auto-start-reverse')
-      .append('path')
-        .attr('d', 'M0,0 L10,5 L0,10 Z')
-        .attr('fill', m.color);
-  }
 
   for (const b of BORDERS_TO_RENDER) {
     const [zA, zB] = b.zones;
@@ -666,78 +652,92 @@ function renderBorderArrows(svg, euFeatures, path, projection) {
   }
 }
 
-// Draw the pair of short, thick, parallel arrows at the border midpoint.
-//   m    : projected [x, y] of border midpoint
-//   cA   : projected centroid of country A — used only for direction
-//   cB   : projected centroid of country B — used only for direction
-//   rowAB: DB row for direction A→B (or null)
-//   rowBA: DB row for direction B→A (or null)
+// ---- arrow geometry ----------------------------------------------
+// Each arrow is a filled SVG path: thick rectangular body + wider triangular
+// head. Dimensions tuned to the user's reference (large, readable, visible
+// over any country fill). Two arrows per border sit side-by-side along the
+// shared-border axis with a small gap.
+const ARROW_LEN       = 72;   // total tail→tip length
+const ARROW_W_BODY    = 22;   // rectangular body width
+const ARROW_W_HEAD    = 34;   // arrowhead base width (must be > W_BODY)
+const ARROW_HEAD_LEN  = 22;   // arrowhead length (along the arrow axis)
+const ARROW_PAIR_GAP  = 6;    // perpendicular gap between the two paired arrows
+
+// Build the path string for a single filled arrow centered at (cx,cy),
+// pointing along unit (ux,uy). Vertices traced clockwise starting at tip.
+function arrowPathD(cx, cy, ux, uy) {
+  const px = -uy, py = ux;            // perpendicular (left side of arrow)
+  const L = ARROW_LEN, H = ARROW_HEAD_LEN;
+  const Wh = ARROW_W_HEAD, Wb = ARROW_W_BODY;
+  // Distance from center to tip / tail / neck along the arrow axis
+  const t = L / 2;          // tip
+  const n = L / 2 - H;      // neck (where head meets body)
+  const b = -L / 2;         // back (tail)
+  // Half-widths
+  const hH = Wh / 2;
+  const hB = Wb / 2;
+  // Point helper
+  const P = (along, across) =>
+    `${(cx + ux * along + px * across).toFixed(2)},${(cy + uy * along + py * across).toFixed(2)}`;
+  return [
+    `M${P(t,    0)}`,         // tip
+    `L${P(n,  +hH)}`,         // head-right base
+    `L${P(n,  +hB)}`,         // neck-right (step in to body width)
+    `L${P(b,  +hB)}`,         // tail-right
+    `L${P(b,  -hB)}`,         // tail-left
+    `L${P(n,  -hB)}`,         // neck-left
+    `L${P(n,  -hH)}`,         // head-left base
+    'Z',
+  ].join(' ');
+}
+
+// Body center in screen coords — where the price label lands.
+// Body extends along the arrow axis from -L/2 (tail) to L/2 - H (neck);
+// midpoint = -H/2.
+function arrowBodyCenter(cx, cy, ux, uy) {
+  const offsetAlong = -ARROW_HEAD_LEN / 2;
+  return [cx + ux * offsetAlong, cy + uy * offsetAlong];
+}
+
+// Draw the pair of arrows at a border midpoint.
 function drawBorderPair(layer, m, cA, cB, rowAB, rowBA, dirAB, dirBA) {
   const [mx, my] = m;
   const dx = cB[0] - cA[0], dy = cB[1] - cA[1];
   const dist = Math.hypot(dx, dy);
   if (dist < 1) return;
+  const ux = dx / dist, uy = dy / dist;     // unit vector A→B
+  const px = -uy,        py = ux;            // perpendicular (along border)
 
-  // Unit vector "across the border" (A→B), and perpendicular (along the border line).
-  const ux = dx / dist, uy = dy / dist;
-  const px = -uy, py = ux;
+  // Each arrow is offset perpendicular by (W_head + gap) / 2 from the midpoint
+  // so they sit side-by-side without overlapping.
+  const halfOffset = (ARROW_W_HEAD + ARROW_PAIR_GAP) / 2;
+  const aCx = mx + px * halfOffset, aCy = my + py * halfOffset;
+  const bCx = mx - px * halfOffset, bCy = my - py * halfOffset;
 
-  const ARROW_LEN     = 38;   // total arrow length in pixels
-  const HALF          = ARROW_LEN / 2;
-  const ARROW_GAP     = 13;   // perpendicular gap between the two parallel arrows
-  const LABEL_OFFSET  = 12;   // perpendicular distance from arrow line to its label
-
-  // Arrow A→B sits on the +perpendicular side
-  const aHx = mx + px * (ARROW_GAP / 2);
-  const aHy = my + py * (ARROW_GAP / 2);
-  // Arrow B→A sits on the −perpendicular side
-  const bHx = mx - px * (ARROW_GAP / 2);
-  const bHy = my - py * (ARROW_GAP / 2);
-
-  drawSingleArrow(layer, aHx, aHy, ux, uy, HALF, rowAB, dirAB,
-                  aHx + px * LABEL_OFFSET, aHy + py * LABEL_OFFSET);
-  drawSingleArrow(layer, bHx, bHy, -ux, -uy, HALF, rowBA, dirBA,
-                  bHx - px * LABEL_OFFSET, bHy - py * LABEL_OFFSET);
+  drawFilledArrow(layer, aCx, aCy,  ux,  uy, rowAB, dirAB);
+  drawFilledArrow(layer, bCx, bCy, -ux, -uy, rowBA, dirBA);
 }
 
-// Single short arrow: centered at (cx, cy), oriented along unit (ux, uy),
-// 2*half pixels long. Label drawn at (labelX, labelY).
-function drawSingleArrow(layer, cx, cy, ux, uy, half, row, dirLabel, labelX, labelY) {
-  const sx = cx - ux * half, sy = cy - uy * half;
-  const ex = cx + ux * half, ey = cy + uy * half;
-
+function drawFilledArrow(layer, cx, cy, ux, uy, row, dirLabel) {
   const v = borderValue(row, ARROW_METRIC, state.profile);
-  const cls = arrowColorClass(v, ARROW_METRIC);
-  const markerId = 'arr-' + (cls === 'marg' ? 'marg' : 'nodata');
+  const hasData = (v !== null);
+  const cls = hasData ? 'has-data' : 'nodata';
 
-  layer.append('line')
-    .attr('class', 'border-arrow-line ' + cls)
-    .attr('x1', sx).attr('y1', sy)
-    .attr('x2', ex).attr('y2', ey)
-    .attr('marker-end', `url(#${markerId})`)
-    .append('title').text(tipFor(row, dirLabel));
+  // Arrow body
+  const path = layer.append('path')
+    .attr('class', 'border-arrow ' + cls)
+    .attr('d', arrowPathD(cx, cy, ux, uy));
+  path.append('title').text(tipFor(row, dirLabel));
 
-  // Label sits in its own group with a small rounded rect behind the text
-  // so it stays readable even when it lands over a colored country fill.
-  const labelText = fmtArrowValue(v, ARROW_METRIC);
-  const grp = layer.append('g').attr('class', 'border-arrow-label-grp')
-    .attr('transform', `translate(${labelX},${labelY})`);
-  // Width is text-content-dependent — we approximate with monospace digits
-  // (4 char max, e.g. "12.3", "—", "+143") then refine after measuring.
-  const text = grp.append('text')
-    .attr('class', 'border-arrow-label' + (v === null ? ' nodata' : ''))
+  // Label centered on the body
+  const [bx, by] = arrowBodyCenter(cx, cy, ux, uy);
+  const labelText = fmtArrowValue(v, ARROW_METRIC) + (hasData ? '€' : '');
+  const text = layer.append('text')
+    .attr('class', 'border-arrow-label ' + cls)
+    .attr('x', bx).attr('y', by)
     .attr('dy', '0.35em')
     .text(labelText);
-  // Insert background rect behind the text using the text's actual bbox
-  try {
-    const bb = text.node().getBBox();
-    grp.insert('rect', 'text')
-      .attr('class', 'border-arrow-label-bg' + (v === null ? ' nodata' : ''))
-      .attr('x', bb.x - 3).attr('y', bb.y - 1.5)
-      .attr('width', bb.width + 6).attr('height', bb.height + 3)
-      .attr('rx', 3).attr('ry', 3);
-  } catch (_) { /* getBBox unavailable in some test envs — harmless */ }
-  grp.append('title').text(tipFor(row, dirLabel));
+  text.append('title').text(tipFor(row, dirLabel));
 }
 
 // Tooltip text builder — shared by line + label so hovering either works.
