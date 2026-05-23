@@ -189,6 +189,36 @@ async function loadRealData() {
     console.warn('borders.json load failed (non-fatal):', e);
   }
 
+  // Hourly border data feeds the JAO marginal-price line overlay on the
+  // Market Spreads tab. Structure: borders[border][direction] →
+  // Map(`${date}|${hour}` → {spread, marginal}). 404 / parse errors are
+  // non-fatal — the overlay just won't render.
+  try {
+    if (manifest.datasets && manifest.datasets.border_hourly) {
+      const bhpath = './data/' + manifest.datasets.border_hourly.path;
+      const bhres = await fetch(bhpath, { cache: 'no-cache' });
+      if (bhres.ok) {
+        const bhjson = await bhres.json();
+        // bhjson.borders = { "PL-DE_LU": { "PL>DE_LU": [{d,h,spread,marginal}, ...] } }
+        const idx = new Map();   // `${border}|${dir}|${date}|${hour}` → {spread, marginal}
+        const byPair = new Map();// `${border}|${dir}` → array, for iteration
+        const bs = bhjson.borders || {};
+        for (const b of Object.keys(bs)) {
+          for (const dir of Object.keys(bs[b])) {
+            const arr = bs[b][dir] || [];
+            byPair.set(`${b}|${dir}`, arr);
+            for (const r of arr) {
+              idx.set(`${b}|${dir}|${r.d}|${r.h}`, r);
+            }
+          }
+        }
+        state.borderHourly = { idx, byPair };
+      }
+    }
+  } catch (e) {
+    console.warn('border_hourly.json load failed (non-fatal):', e);
+  }
+
   // Reshape: { zone -> [ {date, mean, peak, offpeak, tb2, tb4, pv, wind} ] }
   // Schema v4: rows are { z, d, m, p, o, t2, t4, wp, sl }   (PV/Wind capture added)
   // Schema v3: rows are { z, d, m, p, o, t2, t4 }
@@ -1835,6 +1865,64 @@ function aggregateStats(rawArrays) {
   };
 }
 
+// ----- Hourly JAO marginal-price helpers -----------------------------
+// The line overlay on the spreads chart pulls from state.borderHourly,
+// which is keyed by `${border}|${dir}|${date}|${hour}`. Returns an array
+// of 24 (or 23/25 on DST days) numbers in EUR/MW — or null if no data.
+//
+// direction = 'a2b' → use border-dir A→B
+// direction = 'b2a' → use border-dir B→A
+// direction = 'sym' → avg over both available directions
+function _borderKey(zoneA, zoneB) {
+  return [zoneA, zoneB].sort().join('-');
+}
+function _wantDirsFor(zoneA, zoneB) {
+  const sp = state.spreads;
+  const dirAB = `${zoneA}>${zoneB}`;
+  const dirBA = `${zoneB}>${zoneA}`;
+  if (sp.direction === 'a2b') return [dirAB];
+  if (sp.direction === 'b2a') return [dirBA];
+  return [dirAB, dirBA];
+}
+
+// Hourly marginal price for a single date — returns 24-element array
+// (or null if borderHourly is not loaded). Direction handled per setting.
+function hourlyMarginalForDate(zoneA, zoneB, isoDate) {
+  if (!state.borderHourly) return null;
+  const b = _borderKey(zoneA, zoneB);
+  const wantDirs = _wantDirsFor(zoneA, zoneB);
+  const out = new Array(24).fill(null);
+  for (let h = 1; h <= 24; h++) {
+    let sum = 0, n = 0;
+    for (const dir of wantDirs) {
+      const row = state.borderHourly.idx.get(`${b}|${dir}|${isoDate}|${h}`);
+      if (row && row.marginal != null) { sum += row.marginal; n++; }
+    }
+    out[h - 1] = n > 0 ? sum / n : null;
+  }
+  // If literally every hour is null, return null so callers can skip overlay.
+  if (out.every(v => v == null)) return null;
+  return out;
+}
+
+// 24-hour profile of the marginal price averaged over a list of dates.
+// Useful for the Month / Year 24h-profile charts.
+function avgHourlyMarginalForDates(zoneA, zoneB, isoDates) {
+  if (!state.borderHourly) return null;
+  const sums = new Array(24).fill(0);
+  const cnts = new Array(24).fill(0);
+  for (const d of isoDates) {
+    const arr = hourlyMarginalForDate(zoneA, zoneB, d);
+    if (!arr) continue;
+    for (let h = 0; h < 24; h++) {
+      if (arr[h] != null) { sums[h] += arr[h]; cnts[h]++; }
+    }
+  }
+  const out = sums.map((s, h) => cnts[h] > 0 ? s / cnts[h] : null);
+  if (out.every(v => v == null)) return null;
+  return out;
+}
+
 // JAO mp average for a given period of ISO dates. Returns € per MWh (we
 // treat marginal_price_eur_mw as €/MWh for net-spread math — matches the
 // energylive convention).
@@ -1898,7 +1986,11 @@ function renderSpDay() {
 
   const raw = pairHoursForDate(zoneA, zoneB, dayDate);
   const displayArr = applySpreadMode(raw);
-  drawHourBars('sp-day-chart', displayArr, { ctx: `${pairLabel()} · ${dayDate}` });
+  const mpArr = hourlyMarginalForDate(zoneA, zoneB, dayDate);
+  drawHourBars('sp-day-chart', displayArr, {
+    ctx: `${pairLabel()} · ${dayDate}`,
+    lineArr: mpArr,
+  });
 
   const stats = aggregateStats(raw ? [raw] : []);
   const mp = jaoMpForPeriod(zoneA, zoneB, [dayDate]);
@@ -1927,7 +2019,11 @@ function renderSpMonth() {
   // 24h profile averaged across the month
   const displayed = dayArrays.map(applySpreadMode);
   const profile = avgProfile(displayed);
-  drawHourBars('sp-month-hourly', profile, { ctx: `${pairLabel()} · ${monthYM} · 24h avg` });
+  const mpProfile = avgHourlyMarginalForDates(zoneA, zoneB, days);
+  drawHourBars('sp-month-hourly', profile, {
+    ctx: `${pairLabel()} · ${monthYM} · 24h avg`,
+    lineArr: mpProfile,
+  });
 
   const stats = aggregateStats(dayArrays);
   const mp = jaoMpForPeriod(zoneA, zoneB, days);
@@ -1967,7 +2063,11 @@ function renderSpYear() {
   // 24h profile averaged across the year
   const displayed = dayArrays.map(applySpreadMode);
   const profile = avgProfile(displayed);
-  drawHourBars('sp-year-hourly', profile, { ctx: `${pairLabel()} · ${yearY} · 24h avg` });
+  const mpProfile = avgHourlyMarginalForDates(zoneA, zoneB, datesEff);
+  drawHourBars('sp-year-hourly', profile, {
+    ctx: `${pairLabel()} · ${yearY} · 24h avg`,
+    lineArr: mpProfile,
+  });
 
   const stats = aggregateStats(dayArrays);
   const mp = jaoMpForPeriod(zoneA, zoneB, datesEff);
@@ -2208,7 +2308,11 @@ function drawHourBars(svgId, arr, opts) {
   svg.selectAll('*').remove();
   const vb = svg.attr('viewBox').split(/\s+/).map(Number);
   const W = vb[2], H = vb[3];
-  const padL = 42, padR = 10, padT = 14, padB = 28;
+  // When a line overlay is supplied we need extra padding on the right
+  // for the second y-axis labels.
+  const lineArr = opts && opts.lineArr;
+  const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
+  const padL = 42, padR = hasLine ? 48 : 10, padT = 14, padB = 28;
   if (!arr) {
     svg.append('text')
        .attr('x', W / 2).attr('y', H / 2).attr('text-anchor', 'middle')
@@ -2221,14 +2325,25 @@ function drawHourBars(svgId, arr, opts) {
     W, H, padL, padR, padT, padB,
     xLabel: i => String(i + 1),
     xLabelEvery: 1,
+    lineArr: hasLine ? lineArr : null,
+    lineLabel: 'JAO marginal €/MW',
+    lineColor: '#f97316',
     tooltipFor: (i, v) => {
       const hour = i + 1;
       const valTxt = v == null ? '<span class="lbl">no data</span>'
                                 : `<strong>${(v >= 0 ? '+' : '')}${v.toFixed(2)} €/MWh</strong>`;
+      let mpRow = '';
+      if (hasLine) {
+        const mv = lineArr[i];
+        const mpTxt = mv == null ? '<span class="lbl">no data</span>'
+                                  : `<strong>${mv.toFixed(2)} €/MW</strong>`;
+        mpRow = `<div class="row"><span class="lbl">JAO marginal</span>${mpTxt}</div>`;
+      }
       return `
         <div class="ttl">${ctx || 'Hour'}</div>
         <div class="row"><span class="lbl">CET hour</span><span>${hour}</span></div>
-        <div class="row"><span class="lbl">Spread</span>${valTxt}</div>`;
+        <div class="row"><span class="lbl">Spread</span>${valTxt}</div>
+        ${mpRow}`;
     },
   });
 }
@@ -2439,5 +2554,84 @@ function drawBarsAxis(svg, arr, opts) {
          clearHotColumn();
          hideTooltip();
        });
+  }
+
+  // ----- Optional line overlay (JAO marginal price, right Y-axis) -----
+  const lineArr = opts.lineArr;
+  if (lineArr && lineArr.length) {
+    const lineColor = opts.lineColor || '#f97316';
+    const lineLabel = opts.lineLabel || 'line';
+
+    // Independent y-scale on the right. Always include 0 in the range.
+    const lineValid = lineArr.filter(v => v != null);
+    let lMin = Math.min(0, ...lineValid);
+    let lMax = Math.max(0, ...lineValid);
+    if (lMin === lMax) { lMin -= 1; lMax += 1; }
+    const lPad = (lMax - lMin) * 0.10;
+    lMin -= lPad; lMax += lPad;
+    const lineYScale = v => padT + innerH * (1 - (v - lMin) / (lMax - lMin));
+
+    // Right-side tick labels (max / 0 if in range / min).
+    const lineTicks = [lMax, 0, lMin].filter((v, i, a) => a.indexOf(v) === i);
+    lineTicks.forEach(v => {
+      const y = lineYScale(v);
+      svg.append('text')
+         .attr('class', 'y-tick')
+         .attr('x', W - padR + 4).attr('y', y + 3)
+         .attr('text-anchor', 'start')
+         .attr('fill', lineColor)
+         .text(v.toFixed(1));
+    });
+
+    // Build a polyline from non-null segments — spanGaps:false equivalent.
+    // We split on nulls so the path breaks instead of crossing through gaps.
+    let seg = [];
+    const segments = [];
+    for (let i = 0; i < lineArr.length; i++) {
+      const v = lineArr[i];
+      const cx = padL + step * i + step / 2;
+      if (v == null) {
+        if (seg.length > 0) { segments.push(seg); seg = []; }
+        continue;
+      }
+      seg.push({ x: cx, y: lineYScale(v), i, v });
+    }
+    if (seg.length > 0) segments.push(seg);
+
+    const lineGen = d3.line().x(p => p.x).y(p => p.y);
+    for (const s of segments) {
+      svg.append('path')
+         .attr('d', lineGen(s))
+         .attr('fill', 'none')
+         .attr('stroke', lineColor)
+         .attr('stroke-width', 2)
+         .attr('opacity', 0.95)
+         .attr('stroke-linejoin', 'round')
+         .attr('stroke-linecap', 'round');
+    }
+
+    // Point markers — render after the path so they sit on top.
+    for (const s of segments) {
+      for (const p of s) {
+        svg.append('circle')
+           .attr('cx', p.x).attr('cy', p.y).attr('r', 2.6)
+           .attr('fill', lineColor)
+           .attr('stroke', '#fff').attr('stroke-width', 0.6)
+           .style('pointer-events', 'none');
+      }
+    }
+
+    // Tiny legend in the top-right corner.
+    const legX = W - padR - 4;
+    const legY = padT + 4;
+    const legG = svg.append('g').attr('class', 'sp-line-legend');
+    legG.append('line')
+        .attr('x1', legX - 86).attr('x2', legX - 70)
+        .attr('y1', legY + 5).attr('y2', legY + 5)
+        .attr('stroke', lineColor).attr('stroke-width', 2);
+    legG.append('text')
+        .attr('x', legX - 66).attr('y', legY + 8)
+        .attr('font-size', 10).attr('fill', lineColor)
+        .text(lineLabel);
   }
 }
