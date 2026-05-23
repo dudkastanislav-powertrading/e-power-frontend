@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>E-Power — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=18" />
+  <link rel="stylesheet" href="style.css?v=19" />
 </head>
 <body>
   <header class="topbar">
@@ -140,7 +140,7 @@
     <!-- Market Spreads view (hidden by default; nav toggles) -->
     <!-- =================================================== -->
     <section class="spreads-panel hidden" id="spreads-view">
-      <!-- Top global controls: A/B pair, spread type, СБС, direction -->
+      <!-- Top global controls: A/B pair, spread type, CBC, direction -->
       <div class="spreads-toolbar">
         <div class="sp-ctrl">
           <label for="sp-zone-a">Country A (buy)</label>
@@ -160,7 +160,7 @@
           </div>
         </div>
         <div class="sp-ctrl">
-          <label>СБС (JAO mp)</label>
+          <label>CBC (JAO mp)</label>
           <div class="seg-toggle" role="group" aria-label="SBS inclusion">
             <button type="button" class="seg-btn active" data-svs="include"
                     title="Subtract JAO marginal price from effective spread">Include</button>
@@ -251,6 +251,9 @@
       <div class="spreads-footer">
         <span>Time zone: CET · Sources: local Postgres (curated.dam_price + marts.jao_da_daily)</span>
       </div>
+
+      <!-- Floating tooltip — positioned via JS while hovering chart bars -->
+      <div class="sp-tooltip" id="sp-tooltip" aria-hidden="true"></div>
     </section>
   </main>
 
@@ -264,6 +267,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=18" type="module"></script>
+  <script src="app.js?v=19" type="module"></script>
 </body>
 </html>

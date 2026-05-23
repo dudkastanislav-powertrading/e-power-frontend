@@ -1498,7 +1498,7 @@ const isoNum2Iso3 = {
 // Two-country hourly DAM spread analysis. Lazy-loaded data files
 // dam_hourly_YYYY.json. State is mostly self-contained in
 // state.spreads; reuses BORDERS_TO_RENDER and state.borders for
-// the JAO marginal-price ("СБС") overlay.
+// the JAO marginal-price ("CBC") overlay.
 // =============================================================
 // =============================================================
 
@@ -1898,7 +1898,7 @@ function renderSpDay() {
 
   const raw = pairHoursForDate(zoneA, zoneB, dayDate);
   const displayArr = applySpreadMode(raw);
-  drawHourBars('sp-day-chart', displayArr, { axis: 'hours' });
+  drawHourBars('sp-day-chart', displayArr, { ctx: `${pairLabel()} · ${dayDate}` });
 
   const stats = aggregateStats(raw ? [raw] : []);
   const mp = jaoMpForPeriod(zoneA, zoneB, [dayDate]);
@@ -1927,7 +1927,7 @@ function renderSpMonth() {
   // 24h profile averaged across the month
   const displayed = dayArrays.map(applySpreadMode);
   const profile = avgProfile(displayed);
-  drawHourBars('sp-month-hourly', profile, { axis: 'hours' });
+  drawHourBars('sp-month-hourly', profile, { ctx: `${pairLabel()} · ${monthYM} · 24h avg` });
 
   const stats = aggregateStats(dayArrays);
   const mp = jaoMpForPeriod(zoneA, zoneB, days);
@@ -1967,22 +1967,116 @@ function renderSpYear() {
   // 24h profile averaged across the year
   const displayed = dayArrays.map(applySpreadMode);
   const profile = avgProfile(displayed);
-  drawHourBars('sp-year-hourly', profile, { axis: 'hours' });
+  drawHourBars('sp-year-hourly', profile, { ctx: `${pairLabel()} · ${yearY} · 24h avg` });
 
   const stats = aggregateStats(dayArrays);
   const mp = jaoMpForPeriod(zoneA, zoneB, datesEff);
   fillSideStats('sp-year-stats', `Year ${yearY}`, stats, mp);
 }
 
+// ----- Earnings ---------------------------------------------
+// "Earnings if you trade 1 MWh in every positive-spread hour."
+//
+//   revenueEur  = SUM over (d,h) where effective_spread(d,h) > 0 of spread
+//   costEur     = SUM over those (d,h) of daily CBC (JAO mp) for that day
+//   netEur      = revenueEur − costEur
+//   mwh         = count of positive hours (1 MWh per hour)
+//
+// If borders has no JAO row for a day, costs are skipped for that day —
+// we treat it as "no allocation cost incurred" rather than zero out
+// revenue. The function therefore returns null mp days separately so
+// callers can decide whether to surface that as a caveat.
+function computeEarnings(zoneA, zoneB, isoDates) {
+  let revenue = 0, cost = 0, mwh = 0, hoursPositive = 0, totalHours = 0;
+  let daysMissingMp = 0, daysWithMp = 0;
+  const { direction } = state.spreads;
+
+  // Cache daily mp lookups so we don't hit state.borders 24x per day
+  const dailyMp = new Map();   // d → mp value or null
+  function getDailyMp(d) {
+    if (dailyMp.has(d)) return dailyMp.get(d);
+    if (!state.borders) { dailyMp.set(d, null); return null; }
+    const b1 = [zoneA, zoneB].sort().join('-');
+    const dirAB = `${zoneA}>${zoneB}`;
+    const dirBA = `${zoneB}>${zoneA}`;
+    const wantDirs = direction === 'a2b' ? [dirAB]
+                    : direction === 'b2a' ? [dirBA]
+                    : [dirAB, dirBA];
+    let sum = 0, n = 0;
+    for (const dir of wantDirs) {
+      const row = state.borders.get(`${b1}|${dir}|${d}`);
+      if (row && row.mb != null) { sum += row.mb; n++; }
+    }
+    const val = n > 0 ? sum / n : null;
+    dailyMp.set(d, val);
+    return val;
+  }
+
+  for (const d of isoDates) {
+    const raw = pairHoursForDate(zoneA, zoneB, d);
+    if (!raw) continue;
+    const mp = getDailyMp(d);
+    if (mp != null) daysWithMp++;
+    else daysMissingMp++;
+
+    for (const v of raw) {
+      if (v == null) continue;
+      totalHours++;
+      // Apply direction
+      let signed;
+      if (direction === 'a2b') signed = v;
+      else if (direction === 'b2a') signed = -v;
+      else signed = Math.abs(v);
+      if (signed > 0) {
+        revenue += signed;
+        if (mp != null) cost += mp;
+        hoursPositive++;
+        mwh++;
+      }
+    }
+  }
+  return {
+    revenueEur: revenue,
+    costEur: cost,
+    netEur: revenue - cost,
+    mwh,
+    hoursPositive,
+    totalHours,
+    daysWithMp,
+    daysMissingMp,
+  };
+}
+
 // ----- Analysis block ---------------------------------------
 function renderSpAnalysis() {
-  const { zoneA, zoneB, yearY, monthYM, dayDate, spreadType, svs, direction } = state.spreads;
+  const { zoneA, zoneB, yearY, spreadType, svs, direction } = state.spreads;
 
-  const periodLabel = `Year ${yearY}`;
-  const dates = isoDatesOfYear(yearY).filter(d => d <= todayISO());
-  const dayArrays = rawDayArrays(zoneA, zoneB, dates);
+  const today = todayISO();
+  const yearDates = isoDatesOfYear(yearY).filter(d => d <= today);
+  const dayArrays = rawDayArrays(zoneA, zoneB, yearDates);
 
-  // Best hour-of-day (highest avg effective)
+  // --- Headline earnings: best month + selected year YTD --------------
+  // Loop monthly within the selected year, compute earnings per month,
+  // pick the best.
+  let bestMonth = null, bestMonthEarn = null;
+  for (let m = 0; m < 12; m++) {
+    const ym = `${yearY}-${String(m + 1).padStart(2, '0')}`;
+    const mDates = isoDatesOfMonth(ym).filter(d => d <= today);
+    if (mDates.length === 0) continue;
+    const e = computeEarnings(zoneA, zoneB, mDates);
+    if (e.totalHours === 0) continue;
+    if (!bestMonthEarn || e.netEur > bestMonthEarn.netEur) {
+      bestMonthEarn = e; bestMonth = ym;
+    }
+  }
+  const yearEarn = computeEarnings(zoneA, zoneB, yearDates);
+
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const bestMonthHuman = bestMonth
+    ? `${monthLabels[parseInt(bestMonth.slice(5), 10) - 1]} ${bestMonth.slice(0, 4)}`
+    : '—';
+
+  // --- Other stats (existing) -----------------------------------------
   const profile = avgProfile(dayArrays.map(applySpreadMode));
   let bestH = -1, bestV = -Infinity;
   let worstH = -1, worstV = Infinity;
@@ -1992,68 +2086,87 @@ function renderSpAnalysis() {
     if (profile[h] < worstV) { worstV = profile[h]; worstH = h; }
   }
 
-  // Day with biggest positive total
   let bestDay = null, bestDayVal = -Infinity;
   for (let i = 0; i < dayArrays.length; i++) {
     const disp = applySpreadMode(dayArrays[i]);
     if (!disp) continue;
     let s = 0;
     for (const v of disp) { if (v != null) s += v; }
-    if (s > bestDayVal) { bestDayVal = s; bestDay = dates[i]; }
+    if (s > bestDayVal) { bestDayVal = s; bestDay = yearDates[i]; }
   }
-
   const stats = aggregateStats(dayArrays);
-  const mp = jaoMpForPeriod(zoneA, zoneB, dates);
-
+  const mp = jaoMpForPeriod(zoneA, zoneB, yearDates);
   const netAvg = (stats.effective != null && mp != null && svs === 'include')
     ? stats.effective - mp
     : (stats.effective != null ? stats.effective : null);
 
+  // --- Render ----------------------------------------------------------
+  const fmtEur = v => (v == null || !isFinite(v)) ? '—'
+                     : (v >= 0 ? '+' : '−') + Math.abs(v).toLocaleString('en-GB', {maximumFractionDigits: 0}) + ' €';
+  const fmtMwh = v => (v == null) ? '—' : v.toLocaleString('en-GB') + ' MWh';
+
+  const earningsCardHTML = (title, earn, periodTxt) => {
+    if (!earn || earn.totalHours === 0) {
+      return `
+        <div class="sp-earn-card">
+          <div class="sp-earn-title">${escapeHtml(title)}</div>
+          <div class="sp-earn-period">${escapeHtml(periodTxt)}</div>
+          <div class="sp-earn-mwh">—</div>
+          <div class="sp-earn-eur">No data</div>
+        </div>`;
+    }
+    const incCBC = svs === 'include';
+    const net = incCBC ? earn.netEur : earn.revenueEur;
+    const mpCaveat = (earn.daysMissingMp > 0 && incCBC)
+      ? `<div class="sp-earn-warn">CBC unavailable for ${earn.daysMissingMp} of ${earn.daysWithMp + earn.daysMissingMp} days — cost may be under-counted.</div>`
+      : '';
+    return `
+      <div class="sp-earn-card">
+        <div class="sp-earn-title">${escapeHtml(title)}</div>
+        <div class="sp-earn-period">${escapeHtml(periodTxt)}</div>
+        <div class="sp-earn-mwh">${fmtMwh(earn.mwh)}</div>
+        <div class="sp-earn-sub">max theoretical volume (${earn.hoursPositive} positive hours × 1 MWh)</div>
+        <div class="sp-earn-eur ${net >= 0 ? 'pos' : 'neg'}">${fmtEur(net)}</div>
+        <div class="sp-earn-sub">
+          Revenue ${fmtEur(earn.revenueEur)} ${incCBC ? `· CBC −${Math.round(earn.costEur).toLocaleString('en-GB')} €` : '· CBC excluded'}
+        </div>
+        ${mpCaveat}
+      </div>`;
+  };
+
   const items = [
-    {
-      lbl: 'Base spread (avg)',
+    { lbl: 'Base spread (avg)',
       val: stats.base != null ? `${stats.base.toFixed(2)} €/MWh` : '—',
-      sub: 'Signed average over hours',
-    },
-    {
-      lbl: 'Effective spread (avg)',
+      sub: 'Signed average over hours' },
+    { lbl: 'Effective spread (avg)',
       val: stats.effective != null ? `${stats.effective.toFixed(2)} €/MWh` : '—',
-      sub: 'max(0, signed) averaged',
-    },
-    {
-      lbl: '% positive hours',
+      sub: 'max(0, signed) averaged' },
+    { lbl: '% positive hours',
       val: stats.pctPositive != null ? `${(stats.pctPositive * 100).toFixed(1)}%` : '—',
-      sub: `${stats.positive ?? 0} of ${stats.count ?? 0} hours`,
-    },
-    {
-      lbl: 'СБС (avg JAO mp)',
+      sub: `${stats.positive ?? 0} of ${stats.count ?? 0} hours` },
+    { lbl: 'CBC (avg JAO mp)',
       val: mp != null ? `${mp.toFixed(2)} €/MWh` : 'n/a',
-      sub: 'Daily mp averaged over period',
-    },
-    {
-      lbl: 'Net spread',
+      sub: 'Daily mp averaged over period' },
+    { lbl: 'Net spread (avg)',
       val: netAvg != null ? `${netAvg.toFixed(2)} €/MWh` : '—',
-      sub: svs === 'include' ? 'effective − СБС' : 'effective only',
-    },
-    {
-      lbl: 'Best hour (CET)',
+      sub: svs === 'include' ? 'effective − CBC' : 'effective only' },
+    { lbl: 'Best hour (CET)',
       val: bestH >= 0 ? `${bestH + 1}h · ${bestV.toFixed(1)} €` : '—',
-      sub: 'Highest avg effective spread',
-    },
-    {
-      lbl: 'Worst hour (CET)',
+      sub: 'Highest avg effective spread' },
+    { lbl: 'Worst hour (CET)',
       val: worstH >= 0 ? `${worstH + 1}h · ${worstV.toFixed(1)} €` : '—',
-      sub: 'Lowest avg displayed value',
-    },
-    {
-      lbl: 'Best day',
+      sub: 'Lowest avg displayed value' },
+    { lbl: 'Best day',
       val: bestDay && bestDayVal > -Infinity ? `${bestDay} · ${bestDayVal.toFixed(0)} €` : '—',
-      sub: 'Total effective spread (€/MWh·24h)',
-    },
+      sub: 'Total effective spread (€/MWh·24h)' },
   ];
 
   document.getElementById('sp-analysis-body').innerHTML =
-    `<div class="sp-analysis-grid">` +
+    `<div class="sp-earnings-row">
+       ${earningsCardHTML('Best month earnings', bestMonthEarn, bestMonthHuman)}
+       ${earningsCardHTML('Year-to-date earnings', yearEarn, `${yearY} (through ${today})`)}
+     </div>
+     <div class="sp-analysis-grid">` +
     items.map(it => `
       <div class="sp-analysis-stat">
         <div class="lbl">${escapeHtml(it.lbl)}</div>
@@ -2062,7 +2175,8 @@ function renderSpAnalysis() {
       </div>`).join('') +
     `</div>` +
     `<p style="margin-top:10px;font-size:12px;color:#5b6271;">
-       Period: ${periodLabel} · Pair: ${escapeHtml(pairLabel())} · Mode: ${escapeHtml(spreadType)} · СБС: ${escapeHtml(svs)} · Direction: ${escapeHtml(direction)}.
+       Period: Year ${yearY} · Pair: ${escapeHtml(pairLabel())} · Mode: ${escapeHtml(spreadType)} · CBC: ${escapeHtml(svs)} · Direction: ${escapeHtml(direction)}.
+       Earnings model: trade 1 MWh in each positive-spread hour, pay daily CBC per MWh.
      </p>`;
 }
 
@@ -2078,7 +2192,7 @@ function fillSideStats(elId, periodLabel, stats, mp) {
     <h4>${escapeHtml(periodLabel)}</h4>
     <div class="sp-stat-row"><span class="lbl">Base spread</span>${fmtV(stats.base)}</div>
     <div class="sp-stat-row"><span class="lbl">Effective avg</span>${fmtV(stats.effective)}</div>
-    <div class="sp-stat-row"><span class="lbl">СБС (JAO mp)</span>${fmtV(mp)}</div>
+    <div class="sp-stat-row"><span class="lbl">CBC (JAO mp)</span>${fmtV(mp)}</div>
     <div class="sp-stat-row net"><span class="lbl">Net spread</span>${fmtV(netAvg)}</div>
     <div class="sp-stat-row"><span class="lbl">Hours analysed</span><span class="val">${stats.count ?? 0}</span></div>
     <div class="sp-stat-row"><span class="lbl">Positive hours</span><span class="val">${stats.positive ?? 0} (${stats.pctPositive ? (stats.pctPositive * 100).toFixed(0) : 0}%)</span></div>
@@ -2087,13 +2201,14 @@ function fillSideStats(elId, periodLabel, stats, mp) {
 }
 
 // ----- SVG bar drawers --------------------------------------
-// Common: vertically centered axis, positive green, negative red, zero line
+// Common: vertically centered axis, positive green, negative red, zero line.
+// Each drawer wires a tooltip callback that formats the bar context.
 function drawHourBars(svgId, arr, opts) {
   const svg = d3.select(`#${svgId}`);
   svg.selectAll('*').remove();
   const vb = svg.attr('viewBox').split(/\s+/).map(Number);
   const W = vb[2], H = vb[3];
-  const padL = 40, padR = 10, padT = 14, padB = 26;
+  const padL = 42, padR = 10, padT = 14, padB = 28;
   if (!arr) {
     svg.append('text')
        .attr('x', W / 2).attr('y', H / 2).attr('text-anchor', 'middle')
@@ -2101,8 +2216,21 @@ function drawHourBars(svgId, arr, opts) {
        .text('No data');
     return;
   }
-  drawBarsAxis(svg, arr, { W, H, padL, padR, padT, padB,
-    xLabel: i => String(i + 1), xLabelEvery: 1, xAxisTitle: 'Hour (CET 1..24)' });
+  const ctx = (opts && opts.ctx) || '';
+  drawBarsAxis(svg, arr, {
+    W, H, padL, padR, padT, padB,
+    xLabel: i => String(i + 1),
+    xLabelEvery: 1,
+    tooltipFor: (i, v) => {
+      const hour = i + 1;
+      const valTxt = v == null ? '<span class="lbl">no data</span>'
+                                : `<strong>${(v >= 0 ? '+' : '')}${v.toFixed(2)} €/MWh</strong>`;
+      return `
+        <div class="ttl">${ctx || 'Hour'}</div>
+        <div class="row"><span class="lbl">CET hour</span><span>${hour}</span></div>
+        <div class="row"><span class="lbl">Spread</span>${valTxt}</div>`;
+    },
+  });
 }
 
 function drawDailyBars(svgId, arr, isoDates) {
@@ -2110,16 +2238,26 @@ function drawDailyBars(svgId, arr, isoDates) {
   svg.selectAll('*').remove();
   const vb = svg.attr('viewBox').split(/\s+/).map(Number);
   const W = vb[2], H = vb[3];
-  const padL = 36, padR = 10, padT = 14, padB = 28;
+  const padL = 38, padR = 10, padT = 14, padB = 30;
   if (!arr || arr.every(v => v == null)) {
     svg.append('text').attr('x', W/2).attr('y', H/2).attr('text-anchor','middle')
        .attr('fill','#cdd2da').attr('font-size',12).text('No data');
     return;
   }
-  drawBarsAxis(svg, arr, { W, H, padL, padR, padT, padB,
+  drawBarsAxis(svg, arr, {
+    W, H, padL, padR, padT, padB,
     xLabel: i => String(i + 1),
-    xLabelEvery: arr.length > 20 ? 5 : 2,
-    xAxisTitle: 'Day' });
+    xLabelEvery: arr.length > 20 ? 3 : 2,
+    tooltipFor: (i, v) => {
+      const dateLabel = isoDates && isoDates[i] ? isoDates[i] : `Day ${i + 1}`;
+      const valTxt = v == null ? '<span class="lbl">no data</span>'
+                                : `<strong>${(v >= 0 ? '+' : '')}${v.toFixed(2)} €/MWh</strong>`;
+      return `
+        <div class="ttl">Daily average</div>
+        <div class="row"><span class="lbl">Date</span><span>${dateLabel}</span></div>
+        <div class="row"><span class="lbl">Avg</span>${valTxt}</div>`;
+    },
+  });
 }
 
 function drawMonthlyBars(svgId, months) {
@@ -2127,7 +2265,7 @@ function drawMonthlyBars(svgId, months) {
   svg.selectAll('*').remove();
   const vb = svg.attr('viewBox').split(/\s+/).map(Number);
   const W = vb[2], H = vb[3];
-  const padL = 36, padR = 10, padT = 14, padB = 28;
+  const padL = 38, padR = 10, padT = 14, padB = 30;
   const arr = months.map(m => m.val);
   if (arr.every(v => v == null)) {
     svg.append('text').attr('x', W/2).attr('y', H/2).attr('text-anchor','middle')
@@ -2135,71 +2273,171 @@ function drawMonthlyBars(svgId, months) {
     return;
   }
   const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  drawBarsAxis(svg, arr, { W, H, padL, padR, padT, padB,
+  drawBarsAxis(svg, arr, {
+    W, H, padL, padR, padT, padB,
     xLabel: i => monthLabels[i] || '',
-    xLabelEvery: 1, xAxisTitle: 'Month' });
+    xLabelEvery: 1,
+    tooltipFor: (i, v) => {
+      const ymLabel = months[i] && months[i].ym ? months[i].ym : monthLabels[i];
+      const valTxt = v == null ? '<span class="lbl">no data</span>'
+                                : `<strong>${(v >= 0 ? '+' : '')}${v.toFixed(2)} €/MWh</strong>`;
+      return `
+        <div class="ttl">Monthly average</div>
+        <div class="row"><span class="lbl">Month</span><span>${ymLabel}</span></div>
+        <div class="row"><span class="lbl">Avg</span>${valTxt}</div>`;
+    },
+  });
 }
 
-// Core SVG bar plotter with zero-line axis.
+// Core SVG bar plotter with zero-line axis, hover, animated enter.
+// opts.tooltipFor(i, v) → string returned by the tooltip when hovering bar i.
 function drawBarsAxis(svg, arr, opts) {
-  const { W, H, padL, padR, padT, padB, xLabel, xLabelEvery, xAxisTitle } = opts;
+  const { W, H, padL, padR, padT, padB, xLabel, xLabelEvery, tooltipFor } = opts;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
+
   // Determine y range
   const valid = arr.filter(v => v != null);
   let yMin = Math.min(0, ...valid);
   let yMax = Math.max(0, ...valid);
   if (yMin === yMax) { yMin -= 1; yMax += 1; }
-  // Add headroom 8%
   const pad = (yMax - yMin) * 0.08;
   yMin -= pad; yMax += pad;
   const yScale = v => padT + innerH * (1 - (v - yMin) / (yMax - yMin));
   const zeroY = yScale(0);
 
   const n = arr.length;
-  const barW = innerW / n * 0.78;
   const step = innerW / n;
+  const barW = step * 0.78;
 
-  // Y axis labels: min/max/zero
+  // Y grid + labels at min/zero/max
   const yTicks = [yMax, 0, yMin].filter((v, i, a) => a.indexOf(v) === i);
   yTicks.forEach(v => {
     const y = yScale(v);
-    svg.append('line').attr('x1', padL).attr('x2', W - padR)
-       .attr('y1', y).attr('y2', y)
-       .attr('stroke', v === 0 ? '#5b6271' : '#eef0f4')
-       .attr('stroke-width', v === 0 ? 1 : 1);
-    svg.append('text').attr('x', padL - 4).attr('y', y + 3)
-       .attr('text-anchor', 'end').attr('font-size', 10)
-       .attr('fill', '#8a93a0')
+    svg.append('line')
+       .attr('class', v === 0 ? 'y-zero' : 'y-grid')
+       .attr('x1', padL).attr('x2', W - padR)
+       .attr('y1', y).attr('y2', y);
+    svg.append('text')
+       .attr('class', 'y-tick')
+       .attr('x', padL - 4).attr('y', y + 3)
+       .attr('text-anchor', 'end')
        .text(v.toFixed(1));
   });
 
-  // Bars
+  // Column-background rects (whole-column hover target). Drawn UNDER bars so
+  // they highlight on hover but never steal pointer events from the bar
+  // itself — keeping bar-specific brightness intact.
+  const colBgs = [];
+  for (let i = 0; i < n; i++) {
+    const cb = svg.append('rect')
+      .attr('class', 'col-bg')
+      .attr('data-idx', i)
+      .attr('x', padL + step * i)
+      .attr('y', padT)
+      .attr('width', step)
+      .attr('height', innerH);
+    colBgs.push(cb);
+  }
+
+  // X labels
+  const xLabels = [];
+  for (let i = 0; i < n; i++) {
+    if (xLabelEvery && (i % xLabelEvery !== 0) && i !== n - 1) continue;
+    const x = padL + step * i + step / 2;
+    const lab = svg.append('text')
+      .attr('class', 'x-label')
+      .attr('data-idx', i)
+      .attr('x', x).attr('y', H - 10)
+      .attr('text-anchor', 'middle')
+      .text(xLabel(i));
+    xLabels.push(lab);
+  }
+
+  // Tooltip + hover wiring
+  const tooltipEl = document.getElementById('sp-tooltip');
+  function showTooltip(i, evt) {
+    if (!tooltipEl) return;
+    const txt = tooltipFor ? tooltipFor(i, arr[i]) : '';
+    if (!txt) return;
+    tooltipEl.innerHTML = txt;
+    tooltipEl.classList.add('visible');
+    const x = evt.clientX + 14;
+    const y = evt.clientY + 14;
+    // Keep tooltip inside viewport
+    const tw = tooltipEl.offsetWidth, th = tooltipEl.offsetHeight;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    tooltipEl.style.left = `${Math.min(x, vw - tw - 8)}px`;
+    tooltipEl.style.top  = `${Math.min(y, vh - th - 8)}px`;
+  }
+  function hideTooltip() {
+    if (tooltipEl) tooltipEl.classList.remove('visible');
+  }
+
+  function setHotColumn(i) {
+    colBgs.forEach((cb, idx) => cb.classed('hot', idx === i));
+    xLabels.forEach(lab => {
+      lab.classed('hot', parseInt(lab.attr('data-idx'), 10) === i);
+    });
+  }
+  function clearHotColumn() {
+    colBgs.forEach(cb => cb.classed('hot', false));
+    xLabels.forEach(lab => lab.classed('hot', false));
+  }
+
+  // Bars — drawn with d3 transition for a smooth grow-from-zero entry.
   for (let i = 0; i < n; i++) {
     const v = arr[i];
     if (v == null) continue;
     const x = padL + step * i + (step - barW) / 2;
-    const y = v >= 0 ? yScale(v) : zeroY;
-    const h = Math.abs(yScale(v) - zeroY);
+    const yFinal = v >= 0 ? yScale(v) : zeroY;
+    const hFinal = Math.abs(yScale(v) - zeroY);
     const color = v >= 0 ? '#3aa775' : '#d8463a';
-    svg.append('rect').attr('x', x).attr('y', y)
-       .attr('width', barW).attr('height', h)
-       .attr('fill', color).attr('opacity', 0.92)
-       .append('title').text(`${i + 1}: ${v.toFixed(2)}`);
+
+    const bar = svg.append('rect')
+      .attr('class', 'bar')
+      .attr('data-idx', i)
+      .attr('x', x).attr('width', barW)
+      .attr('y', zeroY).attr('height', 0)
+      .attr('fill', color)
+      .attr('opacity', 0.92);
+
+    bar.transition()
+       .duration(420)
+       .ease(d3.easeCubicOut)
+       .delay(i * 8)
+       .attr('y', yFinal)
+       .attr('height', hFinal);
+
+    bar.on('mouseenter', (evt) => {
+         setHotColumn(i);
+         showTooltip(i, evt);
+       })
+       .on('mousemove', (evt) => { showTooltip(i, evt); })
+       .on('mouseleave', () => {
+         clearHotColumn();
+         hideTooltip();
+       });
   }
 
-  // X labels
+  // Whole-column hover via the col-bg rect — captures cursor between
+  // bars (e.g. when bar is 0-height for that hour).
   for (let i = 0; i < n; i++) {
-    if (xLabelEvery && (i % xLabelEvery !== 0) && i !== n - 1) continue;
-    const x = padL + step * i + step / 2;
-    svg.append('text').attr('x', x).attr('y', H - 10)
-       .attr('text-anchor', 'middle').attr('font-size', 10)
-       .attr('fill', '#8a93a0').text(xLabel(i));
-  }
-  if (xAxisTitle) {
-    svg.append('text').attr('x', (W - padR + padL) / 2).attr('y', H - 1)
-       .attr('text-anchor', 'middle').attr('font-size', 10)
-       .attr('fill', '#5b6271').attr('font-weight', 600)
-       .text('');
+    const hit = svg.append('rect')
+      .attr('x', padL + step * i)
+      .attr('y', padT)
+      .attr('width', step)
+      .attr('height', innerH)
+      .attr('fill', 'transparent')
+      .style('pointer-events', 'all');
+    hit.on('mouseenter', (evt) => {
+         setHotColumn(i);
+         showTooltip(i, evt);
+       })
+       .on('mousemove', (evt) => { showTooltip(i, evt); })
+       .on('mouseleave', () => {
+         clearHotColumn();
+         hideTooltip();
+       });
   }
 }
