@@ -745,6 +745,138 @@ button { font: inherit; cursor: pointer; }
   .sp-earnings-row { grid-template-columns: 1fr; }
 }
 
+/* === Actual Generation view ====================================== */
+.generation-panel {
+  grid-column: 1 / -1;
+  background: #ffffff;
+  border: 1px solid #e6e8ed;
+  border-radius: 10px;
+  padding: 18px;
+  box-shadow: 0 1px 2px rgba(15, 23, 35, 0.04);
+}
+.generation-panel.hidden { display: none; }
+
+.gen-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 22px;
+  align-items: flex-end;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #eef0f4;
+  margin-bottom: 16px;
+}
+.gen-status {
+  font-size: 13px;
+  color: #5b6271;
+  background: #f7f8fa;
+  border: 1px dashed #d8dbe0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+}
+.gen-status.hidden { display: none; }
+.gen-status.error { background: #fdecea; border-color: #f5a89e; color: #a8281a; border-style: solid; }
+
+/* SVG line-chart elements */
+.gen-svg .corridor {
+  fill: rgba(72, 132, 204, 0.13);
+  stroke: none;
+}
+.gen-svg .hist-mean {
+  fill: none;
+  stroke: #4884cc;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.gen-svg .actual {
+  fill: none;
+  stroke: #f5a623;
+  stroke-width: 2.2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.gen-svg .actual-dot {
+  fill: #f5a623;
+  stroke: #fff;
+  stroke-width: 1;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.gen-svg .actual-dot.hot { opacity: 1; }
+.gen-svg .hist-dot {
+  fill: #4884cc;
+  stroke: #fff;
+  stroke-width: 1;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.gen-svg .hist-dot.hot { opacity: 1; }
+.gen-svg .crosshair {
+  stroke: #f5a623;
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  opacity: 0;
+}
+.gen-svg .crosshair.visible { opacity: 0.8; }
+
+.gen-svg .x-label { font-size: 10px; fill: #5b6271; font-weight: 500; }
+.gen-svg .x-label.hot { fill: #f5a623; font-weight: 700; }
+.gen-svg .y-grid { stroke: #eef0f4; stroke-width: 1; }
+.gen-svg .y-zero { stroke: #5b6271; stroke-width: 1; }
+.gen-svg .y-tick { font-size: 10px; fill: #8a93a0; }
+
+.gen-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 11px;
+  color: #5b6271;
+  padding: 4px 0 0;
+}
+.gen-legend .swatch {
+  display: inline-block;
+  width: 14px; height: 8px;
+  vertical-align: middle;
+  margin-right: 4px;
+  border-radius: 2px;
+}
+.gen-legend .swatch.actual    { background: #f5a623; }
+.gen-legend .swatch.hist-mean { background: repeating-linear-gradient(90deg,#4884cc 0 5px,transparent 5px 9px); }
+.gen-legend .swatch.corridor  { background: rgba(72, 132, 204, 0.30); }
+
+.gen-methodology {
+  background: #fafbfc;
+  border: 1px solid #eef0f4;
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #2c3340;
+}
+.gen-methodology h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8a93a0;
+  font-weight: 700;
+}
+.gen-methodology ul {
+  margin: 0 0 0 16px;
+  padding: 0;
+}
+.gen-methodology li { margin-bottom: 4px; line-height: 1.4; }
+.gen-methodology ul ul { margin-top: 4px; }
+.gen-methodology code {
+  font-family: SFMono-Regular, Menlo, monospace;
+  background: #eef0f4;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
 /* === Interactive bars =========================================== */
 .sp-chart-wrap svg .bar {
   transition: opacity 0.15s ease, filter 0.15s ease;

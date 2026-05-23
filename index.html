@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>E-Power — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=19" />
+  <link rel="stylesheet" href="style.css?v=20" />
 </head>
 <body>
   <header class="topbar">
@@ -255,6 +255,109 @@
       <!-- Floating tooltip — positioned via JS while hovering chart bars -->
       <div class="sp-tooltip" id="sp-tooltip" aria-hidden="true"></div>
     </section>
+
+    <!-- =================================================== -->
+    <!-- Actual Generation view                                -->
+    <!-- =================================================== -->
+    <section class="generation-panel hidden" id="generation-view">
+      <div class="gen-toolbar">
+        <div class="sp-ctrl">
+          <label for="gen-zone">Country / zone</label>
+          <select id="gen-zone"></select>
+        </div>
+        <div class="sp-ctrl">
+          <label for="gen-type">Production type</label>
+          <select id="gen-type"></select>
+        </div>
+      </div>
+
+      <div class="gen-status" id="gen-status">Loading…</div>
+
+      <!-- === DAY section ============================================ -->
+      <div class="spreads-section" id="gen-day-section">
+        <div class="sp-section-head">
+          <h3 id="gen-day-title">Day: —</h3>
+          <div class="sp-section-ctrl">
+            <label for="gen-day-date">Day</label>
+            <input type="date" id="gen-day-date" />
+          </div>
+        </div>
+        <div class="sp-chart-row">
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">Hourly profile · actual vs historical (CET 1–24)</div>
+            <svg id="gen-day-chart" viewBox="0 0 760 280" preserveAspectRatio="none"></svg>
+          </div>
+          <aside class="sp-side-table" id="gen-day-stats">—</aside>
+        </div>
+      </div>
+
+      <!-- === MONTH section ========================================== -->
+      <div class="spreads-section" id="gen-month-section">
+        <div class="sp-section-head">
+          <h3 id="gen-month-title">Month: —</h3>
+          <div class="sp-section-ctrl">
+            <label for="gen-month-pick">Month</label>
+            <input type="month" id="gen-month-pick" />
+          </div>
+        </div>
+        <div class="sp-chart-row two">
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">Daily averages · actual vs historical</div>
+            <svg id="gen-month-daily" viewBox="0 0 380 240" preserveAspectRatio="none"></svg>
+          </div>
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">24h profile (month avg) · actual vs historical</div>
+            <svg id="gen-month-hourly" viewBox="0 0 380 240" preserveAspectRatio="none"></svg>
+          </div>
+          <aside class="sp-side-table" id="gen-month-stats">—</aside>
+        </div>
+      </div>
+
+      <!-- === YEAR section =========================================== -->
+      <div class="spreads-section" id="gen-year-section">
+        <div class="sp-section-head">
+          <h3 id="gen-year-title">Year: —</h3>
+          <div class="sp-section-ctrl">
+            <label for="gen-year-pick">Year</label>
+            <select id="gen-year-pick"></select>
+          </div>
+        </div>
+        <div class="sp-chart-row two">
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">Monthly averages · actual vs historical</div>
+            <svg id="gen-year-monthly" viewBox="0 0 380 240" preserveAspectRatio="none"></svg>
+          </div>
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">24h profile (year avg) · actual vs historical</div>
+            <svg id="gen-year-hourly" viewBox="0 0 380 240" preserveAspectRatio="none"></svg>
+          </div>
+          <aside class="sp-side-table" id="gen-year-stats">—</aside>
+        </div>
+      </div>
+
+      <!-- Methodology block — explains what "historical mean" means -->
+      <div class="gen-methodology" id="gen-methodology">
+        <h4>What the curves mean</h4>
+        <ul>
+          <li><strong>Actual</strong> (solid orange) — average MW from <code>curated.generation_actual</code> for the selected zone, type, and period.</li>
+          <li><strong>Historical mean</strong> (dashed blue) — seasonal baseline computed from all prior years (excluding the displayed year):
+            <ul>
+              <li>Daily series → average of daily means at the same calendar position, ±7-day smoothing window across prior years.</li>
+              <li>24h profile → average of hourly values at the same hour-of-day within the same month, across prior years.</li>
+              <li>Monthly series → average of daily means within the same calendar month, across prior years.</li>
+            </ul>
+          </li>
+          <li><strong>P5–P95 corridor</strong> (light blue shaded area) — 5th–95th percentile range of the same historical samples. Captures the "normal" working range and trims rare outliers.</li>
+          <li><em>Wind</em> = sum of Wind Onshore (B19) + Wind Offshore (B18). For the corridor in Wind mode, percentiles are added component-wise (slight overestimate of band width; for tighter bounds inspect Wind Onshore / Offshore separately).</li>
+        </ul>
+      </div>
+
+      <div class="spreads-footer">
+        <span>Time zone: CET · Unit: MW (average power per hour) · Source: ENTSO-E Transparency / local Postgres</span>
+      </div>
+
+      <div class="sp-tooltip" id="gen-tooltip" aria-hidden="true"></div>
+    </section>
   </main>
 
   <footer class="footnote">
@@ -267,6 +370,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=19" type="module"></script>
+  <script src="app.js?v=20" type="module"></script>
 </body>
 </html>

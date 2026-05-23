@@ -384,7 +384,7 @@ function bindUI() {
     a.addEventListener('click', async (e) => {
       e.preventDefault();
       const view = a.dataset.view;
-      if (view === 'generation' || view === 'futures') {
+      if (view === 'futures') {
         alert(`"${a.textContent.trim()}" — coming in next iteration.`);
         return;
       }
@@ -1552,6 +1552,7 @@ state.spreads = {
 async function showView(view) {
   const isMap = view === 'dam-map';
   const isSpreads = view === 'dam-spreads';
+  const isGen = view === 'generation';
 
   document.querySelector('.map-panel').classList.toggle('hidden', !isMap);
   document.querySelector('.table-panel').classList.toggle('hidden', !isMap);
@@ -1560,10 +1561,16 @@ async function showView(view) {
     document.querySelector('.zone-detail-panel').classList.add('hidden');
   }
   document.getElementById('spreads-view').classList.toggle('hidden', !isSpreads);
+  const genPanel = document.getElementById('generation-view');
+  if (genPanel) genPanel.classList.toggle('hidden', !isGen);
 
   if (isSpreads) {
     await initSpreadsView();
     renderSpreads();
+  }
+  if (isGen) {
+    await initGenView();
+    renderGen();
   }
 }
 
@@ -2633,5 +2640,677 @@ function drawBarsAxis(svg, arr, opts) {
         .attr('x', legX - 66).attr('y', legY + 8)
         .attr('font-size', 10).attr('fill', lineColor)
         .text(lineLabel);
+  }
+}
+
+// =============================================================
+// =============================================================
+// ACTUAL GENERATION TAB
+// Zone × production-type line-chart explorer with actual MW,
+// historical-mean baseline and P5-P95 corridor.
+// =============================================================
+// =============================================================
+
+state.gen = {
+  isInit: false,
+  zone: 'HU',
+  type: 'B16',         // 'B16' Solar default; pseudo-type 'WIND' = B18+B19
+  dayDate: null,
+  monthYM: null,
+  yearY: null,
+  // Data
+  actualByYear: new Map(),    // year -> Map(`${z}|${t}|${d}` -> [24 floats])
+  loadedYears: new Set(),
+  pendingYearLoads: new Map(),
+  availableYears: [],
+  typeCodes: {},
+  // Climatology indexes
+  climDaily: null,    // Map(`${z}|${t}|${doy}` -> {mean,p5,p95,p50,n})
+  climHourly: null,   // Map(`${z}|${t}|${m}|${h}` -> stats)
+  climMonthly: null,  // Map(`${z}|${t}|${m}` -> stats)
+  climLoaded: false,
+  climPending: null,
+};
+
+// Production-type dropdown configuration. 'WIND' is a pseudo-type that
+// combines B18+B19 client-side.
+const GEN_TYPE_OPTIONS = [
+  { code: 'B16',  label: 'Solar' },
+  { code: 'WIND', label: 'Wind (Onshore + Offshore)' },
+  { code: 'B14',  label: 'Nuclear' },
+  { code: 'B12',  label: 'Hydro Reservoir' },
+  { code: 'B11',  label: 'Hydro Run-of-river' },
+  { code: 'B10',  label: 'Hydro Pumped Storage' },
+  { code: 'B04',  label: 'Fossil Gas' },
+  { code: 'B05',  label: 'Fossil Hard Coal' },
+  { code: 'B02',  label: 'Brown Coal / Lignite' },
+  { code: 'B01',  label: 'Biomass' },
+];
+const WIND_COMPONENTS = ['B18', 'B19'];
+
+// ----- Init -------------------------------------------------
+async function initGenView() {
+  if (state.gen.isInit) return;
+
+  populateGenSelects();
+  initGenDefaults();
+  bindGenControls();
+  state.gen.isInit = true;
+
+  // Manifest already loaded by spreads; reuse availableYears if possible
+  await loadGenManifest();
+  await Promise.all([loadGenClimatology(), loadGenActualYear(yearOfISO(state.gen.dayDate))]);
+}
+
+function populateGenSelects() {
+  const zSel = document.getElementById('gen-zone');
+  const tSel = document.getElementById('gen-type');
+  zSel.innerHTML = '';
+  ZONES.slice().sort((a, b) => a.code.localeCompare(b.code)).forEach(z => {
+    const opt = document.createElement('option');
+    opt.value = z.code;
+    opt.textContent = `${z.code} — ${z.name}`;
+    zSel.appendChild(opt);
+  });
+  tSel.innerHTML = '';
+  GEN_TYPE_OPTIONS.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.code;
+    opt.textContent = t.label;
+    tSel.appendChild(opt);
+  });
+  zSel.value = state.gen.zone;
+  tSel.value = state.gen.type;
+}
+
+function initGenDefaults() {
+  state.gen.dayDate = state.date || todayISO();
+  document.getElementById('gen-day-date').value = state.gen.dayDate;
+  const d = parseISO(state.gen.dayDate);
+  const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  state.gen.monthYM = ym;
+  document.getElementById('gen-month-pick').value = ym;
+  state.gen.yearY = d.getUTCFullYear();
+}
+
+function bindGenControls() {
+  document.getElementById('gen-zone').addEventListener('change', async (e) => {
+    state.gen.zone = e.target.value;
+    renderGen();
+  });
+  document.getElementById('gen-type').addEventListener('change', async (e) => {
+    state.gen.type = e.target.value;
+    renderGen();
+  });
+  document.getElementById('gen-day-date').addEventListener('change', async (e) => {
+    state.gen.dayDate = e.target.value;
+    await ensureGenYearLoaded(yearOfISO(state.gen.dayDate));
+    renderGen();
+  });
+  document.getElementById('gen-month-pick').addEventListener('change', async (e) => {
+    state.gen.monthYM = e.target.value;
+    await ensureGenYearLoaded(parseInt(e.target.value.slice(0, 4), 10));
+    renderGen();
+  });
+  document.getElementById('gen-year-pick').addEventListener('change', async (e) => {
+    state.gen.yearY = parseInt(e.target.value, 10);
+    await ensureGenYearLoaded(state.gen.yearY);
+    renderGen();
+  });
+}
+
+async function loadGenManifest() {
+  try {
+    const m = await fetch('./data/manifest.json', { cache: 'no-cache' }).then(r => r.json());
+    const g = m.datasets && m.datasets.gen_actual;
+    if (g && Array.isArray(g.years)) {
+      state.gen.availableYears = g.years.map(y => y.year).sort();
+      state.gen.typeCodes = g.type_codes || {};
+      populateGenYearSelect();
+    } else {
+      setGenStatus('Generation dataset not in manifest. Regenerate snapshot.', 'error');
+    }
+  } catch (e) {
+    setGenStatus(`Manifest load failed: ${e.message}`, 'error');
+  }
+}
+
+function populateGenYearSelect() {
+  const sel = document.getElementById('gen-year-pick');
+  sel.innerHTML = '';
+  for (const y of state.gen.availableYears) {
+    const opt = document.createElement('option');
+    opt.value = String(y);
+    opt.textContent = String(y);
+    sel.appendChild(opt);
+  }
+  let y = state.gen.yearY;
+  if (!state.gen.availableYears.includes(y)) {
+    y = state.gen.availableYears[state.gen.availableYears.length - 1];
+    state.gen.yearY = y;
+  }
+  sel.value = String(y);
+}
+
+async function loadGenActualYear(year) {
+  const g = state.gen;
+  if (!year) return;
+  if (g.loadedYears.has(year)) return;
+  if (g.pendingYearLoads.has(year)) return g.pendingYearLoads.get(year);
+  if (g.availableYears.length && !g.availableYears.includes(year)) return;
+  setGenStatus(`Loading ${year} generation data…`);
+  const p = fetch(`./data/gen_actual_${year}.json`, { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(j => {
+      const idx = new Map();
+      for (const row of (j.rows || [])) {
+        idx.set(`${row.z}|${row.t}|${row.d}`, row.p);
+      }
+      g.actualByYear.set(year, idx);
+      g.loadedYears.add(year);
+      g.pendingYearLoads.delete(year);
+      maybeHideGenStatus();
+    })
+    .catch(err => {
+      g.pendingYearLoads.delete(year);
+      setGenStatus(`Failed to load ${year}: ${err.message}`, 'error');
+    });
+  g.pendingYearLoads.set(year, p);
+  return p;
+}
+
+async function loadGenClimatology() {
+  const g = state.gen;
+  if (g.climLoaded) return;
+  if (g.climPending) return g.climPending;
+  setGenStatus('Loading climatology…');
+  g.climPending = fetch('./data/gen_climatology.json', { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(j => {
+      g.climDaily = new Map();
+      for (const r of (j.daily || [])) {
+        g.climDaily.set(`${r.z}|${r.t}|${r.doy}`, r);
+      }
+      g.climHourly = new Map();
+      for (const r of (j.hourly || [])) {
+        g.climHourly.set(`${r.z}|${r.t}|${r.m}|${r.h}`, r);
+      }
+      g.climMonthly = new Map();
+      for (const r of (j.monthly || [])) {
+        g.climMonthly.set(`${r.z}|${r.t}|${r.m}`, r);
+      }
+      g.climLoaded = true;
+      g.climPending = null;
+      maybeHideGenStatus();
+    })
+    .catch(err => {
+      g.climPending = null;
+      setGenStatus(`Climatology load failed: ${err.message}`, 'error');
+    });
+  return g.climPending;
+}
+
+async function ensureGenYearLoaded(year) {
+  await loadGenActualYear(year);
+}
+
+function setGenStatus(msg, level) {
+  const el = document.getElementById('gen-status');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  el.classList.toggle('error', level === 'error');
+}
+function maybeHideGenStatus() {
+  const g = state.gen;
+  if (g.climLoaded && g.loadedYears.size > 0) {
+    document.getElementById('gen-status').classList.add('hidden');
+  }
+}
+
+// ----- Data lookups -----------------------------------------
+// Day-of-year (1..366) for an ISO date string, leap-year aware.
+function doyOfISO(iso) {
+  const d = parseISO(iso);
+  const start = Date.UTC(d.getUTCFullYear(), 0, 1);
+  return Math.floor((d.getTime() - start) / 86400000) + 1;
+}
+
+// Resolve the effective production-type code(s) for a UI selection.
+// 'WIND' expands to [B18, B19]; everything else stays as one code.
+function genTypeCodes(uiType) {
+  return uiType === 'WIND' ? WIND_COMPONENTS : [uiType];
+}
+
+// Actual hourly array for one day. For pseudo-type WIND, sums components.
+function genActualHoursForDate(zone, uiType, isoDate) {
+  const yr = yearOfISO(isoDate);
+  const yearIdx = state.gen.actualByYear.get(yr);
+  if (!yearIdx) return null;
+  const codes = genTypeCodes(uiType);
+  const out = new Array(24).fill(null);
+  let anyHit = false;
+  for (const code of codes) {
+    const arr = yearIdx.get(`${zone}|${code}|${isoDate}`);
+    if (!arr) continue;
+    anyHit = true;
+    for (let i = 0; i < Math.min(arr.length, 24); i++) {
+      if (arr[i] == null) continue;
+      out[i] = (out[i] == null ? 0 : out[i]) + arr[i];
+    }
+  }
+  return anyHit ? out : null;
+}
+
+// Daily average for a date.
+function genActualDailyAvg(zone, uiType, isoDate) {
+  const arr = genActualHoursForDate(zone, uiType, isoDate);
+  if (!arr) return null;
+  let s = 0, n = 0;
+  for (const v of arr) { if (v != null) { s += v; n++; } }
+  return n > 0 ? s / n : null;
+}
+
+// Climatology lookups — pseudo-type WIND sums components stats.
+function climLookup(map, keyParts, codes) {
+  // keyParts is [...prefix without type]; we append type and try to merge stats
+  let mean = 0, p5 = 0, p95 = 0, p50 = 0, n = Infinity, anyHit = false;
+  for (const code of codes) {
+    const key = [keyParts[0], code, ...keyParts.slice(1)].join('|');
+    const v = map.get(key);
+    if (!v) continue;
+    anyHit = true;
+    mean += v.mean ?? 0;
+    p5   += v.p5   ?? 0;
+    p95  += v.p95  ?? 0;
+    p50  += v.p50  ?? 0;
+    if (v.n != null) n = Math.min(n, v.n);
+  }
+  if (!anyHit) return null;
+  return { mean, p5, p95, p50, n: n === Infinity ? null : n };
+}
+
+function climForDoy(zone, uiType, doy) {
+  if (!state.gen.climDaily) return null;
+  return climLookup(state.gen.climDaily, [zone, doy], genTypeCodes(uiType));
+}
+function climForMonthHour(zone, uiType, month, hour) {
+  if (!state.gen.climHourly) return null;
+  return climLookup(state.gen.climHourly, [zone, month, hour], genTypeCodes(uiType));
+}
+function climForMonth(zone, uiType, month) {
+  if (!state.gen.climMonthly) return null;
+  return climLookup(state.gen.climMonthly, [zone, month], genTypeCodes(uiType));
+}
+
+// ----- Render entry -----------------------------------------
+function renderGen() {
+  if (!state.gen.isInit) return;
+  if (!state.gen.climLoaded) { return; }   // wait for climatology
+  renderGenDay();
+  renderGenMonth();
+  renderGenYear();
+}
+
+function genTypeLabel(code) {
+  const opt = GEN_TYPE_OPTIONS.find(o => o.code === code);
+  return opt ? opt.label : code;
+}
+
+// ----- Day section ------------------------------------------
+function renderGenDay() {
+  const { zone, type, dayDate } = state.gen;
+  document.getElementById('gen-day-title').textContent =
+    `Day: ${dayDate} · ${zone} · ${genTypeLabel(type)}`;
+
+  const actual = genActualHoursForDate(zone, type, dayDate);
+  const month = parseInt(dayDate.slice(5, 7), 10);
+
+  const points = [];
+  for (let h = 1; h <= 24; h++) {
+    const clim = climForMonthHour(zone, type, month, h);
+    points.push({
+      x: h,
+      label: String(h),
+      actual: actual ? actual[h - 1] : null,
+      mean:   clim ? clim.mean : null,
+      p5:     clim ? clim.p5   : null,
+      p95:    clim ? clim.p95  : null,
+    });
+  }
+  drawGenLineChart('gen-day-chart', points, {
+    xAxisTitle: 'CET hour',
+    tooltipFor: (p) => formatGenTooltip('Hour ' + p.label, p),
+  });
+  fillGenStats('gen-day-stats', `Day ${dayDate}`, points);
+}
+
+// ----- Month section ----------------------------------------
+function renderGenMonth() {
+  const { zone, type, monthYM } = state.gen;
+  document.getElementById('gen-month-title').textContent =
+    `Month: ${monthYM} · ${zone} · ${genTypeLabel(type)}`;
+
+  const month = parseInt(monthYM.slice(5), 10);
+  const days = isoDatesOfMonth(monthYM);
+
+  // Daily series
+  const dailyPoints = days.map((iso, i) => {
+    const doy = doyOfISO(iso);
+    const clim = climForDoy(zone, type, doy);
+    return {
+      x: i + 1,
+      label: iso.slice(8),
+      isoDate: iso,
+      actual: genActualDailyAvg(zone, type, iso),
+      mean: clim ? clim.mean : null,
+      p5:   clim ? clim.p5   : null,
+      p95:  clim ? clim.p95  : null,
+    };
+  });
+  drawGenLineChart('gen-month-daily', dailyPoints, {
+    xAxisTitle: 'Day of month',
+    xLabelEvery: dailyPoints.length > 18 ? 3 : 2,
+    tooltipFor: (p) => formatGenTooltip(p.isoDate, p),
+  });
+
+  // 24h profile over month (avg actual at hour h across days)
+  const profilePoints = [];
+  for (let h = 1; h <= 24; h++) {
+    let s = 0, n = 0;
+    for (const iso of days) {
+      const arr = genActualHoursForDate(zone, type, iso);
+      if (arr && arr[h - 1] != null) { s += arr[h - 1]; n++; }
+    }
+    const actualAvg = n > 0 ? s / n : null;
+    const clim = climForMonthHour(zone, type, month, h);
+    profilePoints.push({
+      x: h, label: String(h),
+      actual: actualAvg,
+      mean: clim ? clim.mean : null,
+      p5:   clim ? clim.p5   : null,
+      p95:  clim ? clim.p95  : null,
+    });
+  }
+  drawGenLineChart('gen-month-hourly', profilePoints, {
+    xAxisTitle: 'CET hour',
+    tooltipFor: (p) => formatGenTooltip('Hour ' + p.label, p),
+  });
+
+  fillGenStats('gen-month-stats', `Month ${monthYM}`, dailyPoints);
+}
+
+// ----- Year section -----------------------------------------
+function renderGenYear() {
+  const { zone, type, yearY } = state.gen;
+  document.getElementById('gen-year-title').textContent =
+    `Year: ${yearY} · ${zone} · ${genTypeLabel(type)}`;
+
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const today = todayISO();
+
+  // Monthly series
+  const monthlyPoints = months.map((mLab, mi) => {
+    const m = mi + 1;
+    const ym = `${yearY}-${String(m).padStart(2, '0')}`;
+    const days = isoDatesOfMonth(ym).filter(d => d <= today);
+    let s = 0, n = 0;
+    for (const iso of days) {
+      const v = genActualDailyAvg(zone, type, iso);
+      if (v != null) { s += v; n++; }
+    }
+    const actual = n > 0 ? s / n : null;
+    const clim = climForMonth(zone, type, m);
+    return {
+      x: m, label: mLab, monthLabel: ym,
+      actual,
+      mean: clim ? clim.mean : null,
+      p5:   clim ? clim.p5   : null,
+      p95:  clim ? clim.p95  : null,
+    };
+  });
+  drawGenLineChart('gen-year-monthly', monthlyPoints, {
+    xAxisTitle: 'Month',
+    xLabelEvery: 1,
+    tooltipFor: (p) => formatGenTooltip(p.monthLabel, p),
+  });
+
+  // 24h profile over year: avg actual at hour h across all days of yearY
+  // Climatology baseline: average over all 12 months' (month, hour) cells.
+  const yearDates = isoDatesOfYear(yearY).filter(d => d <= today);
+  const yearProfile = [];
+  for (let h = 1; h <= 24; h++) {
+    let sumA = 0, nA = 0;
+    for (const iso of yearDates) {
+      const arr = genActualHoursForDate(zone, type, iso);
+      if (arr && arr[h - 1] != null) { sumA += arr[h - 1]; nA++; }
+    }
+    const actualAvg = nA > 0 ? sumA / nA : null;
+    // Combine clim across 12 months
+    let cm = 0, c5 = 0, c95 = 0, cn = 0;
+    for (let m = 1; m <= 12; m++) {
+      const cell = climForMonthHour(zone, type, m, h);
+      if (!cell || cell.mean == null) continue;
+      cm += cell.mean; c5 += cell.p5; c95 += cell.p95; cn++;
+    }
+    const mean = cn > 0 ? cm / cn : null;
+    const p5 = cn > 0 ? c5 / cn : null;
+    const p95 = cn > 0 ? c95 / cn : null;
+    yearProfile.push({ x: h, label: String(h), actual: actualAvg, mean, p5, p95 });
+  }
+  drawGenLineChart('gen-year-hourly', yearProfile, {
+    xAxisTitle: 'CET hour',
+    tooltipFor: (p) => formatGenTooltip('Hour ' + p.label, p),
+  });
+
+  fillGenStats('gen-year-stats', `Year ${yearY}`, monthlyPoints);
+}
+
+// ----- Side stats -------------------------------------------
+function fillGenStats(elId, periodLabel, points) {
+  const validActual = points.filter(p => p.actual != null);
+  const validMean   = points.filter(p => p.mean   != null);
+  const avgA = validActual.length ? validActual.reduce((a, p) => a + p.actual, 0) / validActual.length : null;
+  const avgM = validMean.length   ? validMean.reduce((a, p) => a + p.mean,   0) / validMean.length   : null;
+  const deviation = (avgA != null && avgM != null && avgM > 0)
+    ? ((avgA - avgM) / avgM) * 100 : null;
+
+  // Find peak (actual)
+  let peak = null, peakV = -Infinity;
+  for (const p of points) {
+    if (p.actual != null && p.actual > peakV) { peakV = p.actual; peak = p; }
+  }
+  const fmtMw = v => v == null ? '<span class="val muted">—</span>'
+                                : `<span class="val">${v.toFixed(0)} MW</span>`;
+  const devTxt = deviation == null ? '<span class="val muted">—</span>'
+    : `<span class="val" style="color:${deviation >= 0 ? '#2a9460' : '#c63b2f'};">${deviation >= 0 ? '+' : ''}${deviation.toFixed(1)}%</span>`;
+  document.getElementById(elId).innerHTML = `
+    <h4>${escapeHtml(periodLabel)}</h4>
+    <div class="sp-stat-row"><span class="lbl">Actual avg</span>${fmtMw(avgA)}</div>
+    <div class="sp-stat-row"><span class="lbl">Historical mean</span>${fmtMw(avgM)}</div>
+    <div class="sp-stat-row net"><span class="lbl">vs historical</span>${devTxt}</div>
+    <div class="sp-stat-row"><span class="lbl">Peak actual</span>${
+      peak ? `<span class="val">${peakV.toFixed(0)} MW · ${escapeHtml(peak.label)}</span>` : '<span class="val muted">—</span>'
+    }</div>
+    <div class="sp-stat-row"><span class="lbl">Points</span><span class="val">${validActual.length}/${points.length}</span></div>
+    <div class="gen-legend" style="margin-top:8px;">
+      <span><span class="swatch actual"></span>Actual</span>
+      <span><span class="swatch hist-mean"></span>Hist mean</span>
+      <span><span class="swatch corridor"></span>P5–P95</span>
+    </div>
+  `;
+}
+
+// ----- Tooltip formatter ------------------------------------
+function formatGenTooltip(headerLabel, p) {
+  const fmt = v => v == null ? '<span class="lbl">—</span>'
+                              : `<strong>${v.toFixed(0)} MW</strong>`;
+  return `
+    <div class="ttl">${escapeHtml(headerLabel)}</div>
+    <div class="row"><span class="lbl">Actual</span>${fmt(p.actual)}</div>
+    <div class="row"><span class="lbl">Hist mean</span>${fmt(p.mean)}</div>
+    <div class="row"><span class="lbl">P5–P95</span>${
+      p.p5 != null && p.p95 != null
+        ? `<strong>${p.p5.toFixed(0)}–${p.p95.toFixed(0)} MW</strong>`
+        : '<span class="lbl">—</span>'
+    }</div>`;
+}
+
+// ----- Line chart drawer ------------------------------------
+function drawGenLineChart(svgId, points, opts) {
+  const svg = d3.select(`#${svgId}`);
+  svg.selectAll('*').remove();
+  svg.classed('gen-svg', true);
+  const vb = svg.attr('viewBox').split(/\s+/).map(Number);
+  const W = vb[2], H = vb[3];
+  const padL = 44, padR = 14, padT = 14, padB = 30;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  // Collect numeric values for y-range
+  const allVals = [];
+  for (const p of points) {
+    if (p.actual != null) allVals.push(p.actual);
+    if (p.mean   != null) allVals.push(p.mean);
+    if (p.p5     != null) allVals.push(p.p5);
+    if (p.p95    != null) allVals.push(p.p95);
+  }
+  if (allVals.length === 0) {
+    svg.append('text').attr('x', W / 2).attr('y', H / 2).attr('text-anchor', 'middle')
+       .attr('fill', '#cdd2da').attr('font-size', 13).text('No data');
+    return;
+  }
+  let yMin = Math.min(0, ...allVals);
+  let yMax = Math.max(...allVals);
+  if (yMin === yMax) { yMax = yMin + 1; }
+  const pad = (yMax - yMin) * 0.08;
+  yMax += pad;
+  if (yMin < 0) yMin -= pad;
+  const yScale = v => padT + innerH * (1 - (v - yMin) / (yMax - yMin));
+
+  const n = points.length;
+  const xScale = i => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+
+  // Y gridlines + tick labels (4-5 ticks)
+  const tickCount = 5;
+  const tickStep = (yMax - yMin) / (tickCount - 1);
+  for (let k = 0; k < tickCount; k++) {
+    const v = yMin + tickStep * k;
+    const y = yScale(v);
+    svg.append('line')
+       .attr('class', Math.abs(v) < 1e-6 ? 'y-zero' : 'y-grid')
+       .attr('x1', padL).attr('x2', W - padR)
+       .attr('y1', y).attr('y2', y);
+    svg.append('text')
+       .attr('class', 'y-tick')
+       .attr('x', padL - 5).attr('y', y + 3)
+       .attr('text-anchor', 'end')
+       .text(v.toFixed(0));
+  }
+
+  // P5-P95 corridor (path with upper + lower boundaries)
+  const cPts = points.filter(p => p.p5 != null && p.p95 != null);
+  if (cPts.length >= 2) {
+    let d = '';
+    // upper edge L→R
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (p.p95 == null) continue;
+      d += (d === '' ? 'M' : ' L') + xScale(i).toFixed(1) + ' ' + yScale(p.p95).toFixed(1);
+    }
+    // lower edge R→L
+    for (let i = points.length - 1; i >= 0; i--) {
+      const p = points[i];
+      if (p.p5 == null) continue;
+      d += ' L' + xScale(i).toFixed(1) + ' ' + yScale(p.p5).toFixed(1);
+    }
+    d += ' Z';
+    svg.append('path').attr('class', 'corridor').attr('d', d)
+       .attr('opacity', 0)
+       .transition().duration(500).attr('opacity', 1);
+  }
+
+  // Historical mean line (dashed)
+  const meanLine = d3.line()
+    .defined(d => d.mean != null)
+    .x((d, i) => xScale(i))
+    .y(d => yScale(d.mean))
+    .curve(d3.curveMonotoneX);
+  svg.append('path').datum(points).attr('class', 'hist-mean')
+     .attr('d', meanLine).attr('opacity', 0)
+     .transition().duration(500).delay(150).attr('opacity', 1);
+
+  // Actual line (solid)
+  const actualLine = d3.line()
+    .defined(d => d.actual != null)
+    .x((d, i) => xScale(i))
+    .y(d => yScale(d.actual))
+    .curve(d3.curveMonotoneX);
+  svg.append('path').datum(points).attr('class', 'actual')
+     .attr('d', actualLine).attr('opacity', 0)
+     .transition().duration(500).delay(300).attr('opacity', 1);
+
+  // X labels
+  const xLabelEvery = opts.xLabelEvery || 1;
+  const xLabels = [];
+  for (let i = 0; i < n; i++) {
+    if (i % xLabelEvery !== 0 && i !== n - 1) continue;
+    const lab = svg.append('text')
+      .attr('class', 'x-label')
+      .attr('data-idx', i)
+      .attr('x', xScale(i)).attr('y', H - 10)
+      .attr('text-anchor', 'middle')
+      .text(points[i].label);
+    xLabels.push(lab);
+  }
+
+  // Vertical crosshair + dots (hidden initially)
+  const cross = svg.append('line')
+    .attr('class', 'crosshair')
+    .attr('y1', padT).attr('y2', H - padB);
+  const aDot = svg.append('circle').attr('class', 'actual-dot').attr('r', 4);
+  const hDot = svg.append('circle').attr('class', 'hist-dot').attr('r', 4);
+
+  // Tooltip element
+  const tt = document.getElementById('gen-tooltip');
+  function showTooltip(i, evt) {
+    if (!tt) return;
+    tt.innerHTML = opts.tooltipFor(points[i]);
+    tt.classList.add('visible');
+    const x = evt.clientX + 14, y = evt.clientY + 14;
+    const tw = tt.offsetWidth, th = tt.offsetHeight;
+    tt.style.left = `${Math.min(x, window.innerWidth - tw - 8)}px`;
+    tt.style.top  = `${Math.min(y, window.innerHeight - th - 8)}px`;
+  }
+  function hideTooltip() { if (tt) tt.classList.remove('visible'); }
+  function setHotIdx(i) {
+    cross.attr('x1', xScale(i)).attr('x2', xScale(i)).classed('visible', true);
+    const p = points[i];
+    if (p.actual != null) {
+      aDot.attr('cx', xScale(i)).attr('cy', yScale(p.actual)).classed('hot', true);
+    } else aDot.classed('hot', false);
+    if (p.mean != null) {
+      hDot.attr('cx', xScale(i)).attr('cy', yScale(p.mean)).classed('hot', true);
+    } else hDot.classed('hot', false);
+    xLabels.forEach(lab => lab.classed('hot', parseInt(lab.attr('data-idx'), 10) === i));
+  }
+  function clearHot() {
+    cross.classed('visible', false);
+    aDot.classed('hot', false);
+    hDot.classed('hot', false);
+    xLabels.forEach(lab => lab.classed('hot', false));
+  }
+
+  // Invisible hit-zones — one per data point
+  for (let i = 0; i < n; i++) {
+    const halfStep = innerW / Math.max(n - 1, 1) / 2;
+    const x0 = xScale(i) - halfStep;
+    const w  = halfStep * 2;
+    svg.append('rect')
+      .attr('x', x0).attr('y', padT)
+      .attr('width', w).attr('height', innerH)
+      .attr('fill', 'transparent').style('pointer-events', 'all')
+      .on('mouseenter', (evt) => { setHotIdx(i); showTooltip(i, evt); })
+      .on('mousemove',  (evt) => { showTooltip(i, evt); })
+      .on('mouseleave', () => { clearHot(); hideTooltip(); });
   }
 }
