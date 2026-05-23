@@ -828,10 +828,28 @@ function renderMap() {
         .attr('transform', d => `translate(${d.x},${d.y})`)
         .each(function(d) {
           const sel = d3.select(this);
-          sel.append('tspan').attr('x', 0).attr('dy', '-0.2em').attr('class', 'code')
+          // Vertical layout: code (top) → price (mid) → delta (bottom if applicable)
+          const showDelta = state.profile !== 'baseload' && d.v != null;
+          const baseV = showDelta ? getCountryPrice(d.iso3, state.mode, 'baseload') : null;
+          let deltaTxt = null, deltaCls = null;
+          if (showDelta && baseV != null && baseV !== 0) {
+            const dp = ((d.v - baseV) / Math.abs(baseV)) * 100;
+            const sign = dp > 0 ? '+' : (dp < 0 ? '−' : '');
+            deltaTxt = `(${sign}${Math.abs(dp).toFixed(0)}%)`;
+            deltaCls = dp > 0.5 ? 'delta up' : (dp < -0.5 ? 'delta down' : 'delta flat');
+          }
+          // Top-align so the block stays centered when 2 or 3 lines.
+          const linesCount = (showDelta && deltaTxt) ? 3 : 2;
+          const topDy = linesCount === 3 ? '-0.85em' : '-0.2em';
+          sel.append('tspan').attr('x', 0).attr('dy', topDy).attr('class', 'code')
              .text(d.code);
           sel.append('tspan').attr('x', 0).attr('dy', '1.05em').attr('class', 'price')
              .text(d.v == null ? '—' : Math.round(d.v) + '€');
+          if (deltaTxt) {
+            sel.append('tspan').attr('x', 0).attr('dy', '1.05em')
+               .attr('class', deltaCls)
+               .text(deltaTxt);
+          }
         });
   }
 

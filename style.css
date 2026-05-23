@@ -223,8 +223,12 @@ button { font: inherit; cursor: pointer; }
   stroke-width: 3px;
   stroke-linejoin: round;
 }
-.country-label .code { font-size: 11px; font-weight: 700; fill: #1f2730; }
+.country-label .code  { font-size: 11px; font-weight: 700; fill: #1f2730; }
 .country-label .price { font-size: 10px; font-weight: 500; fill: #1f2730; }
+.country-label .delta { font-size: 9px;  font-weight: 600; }
+.country-label .delta.up   { fill: #c52f2f; }   /* product more expensive than baseload */
+.country-label .delta.down { fill: #1f8a2c; }   /* cheaper than baseload */
+.country-label .delta.flat { fill: #5b6271; }
 
 /* === Zone detail slide-out panel ================================== */
 .zone-detail-panel {
