@@ -189,7 +189,8 @@ async function loadRealData() {
     console.warn('borders.json load failed (non-fatal):', e);
   }
 
-  // Reshape: { zone -> [ {date, mean, peak, offpeak, tb2, tb4} ] }
+  // Reshape: { zone -> [ {date, mean, peak, offpeak, tb2, tb4, pv, wind} ] }
+  // Schema v4: rows are { z, d, m, p, o, t2, t4, wp, sl }   (PV/Wind capture added)
   // Schema v3: rows are { z, d, m, p, o, t2, t4 }
   // Schema v2: rows are { z, d, m, p, o } (TB2/TB4 unavailable)
   // Schema v1: { zone, date, mean_eur, peak_eur, offpeak_eur }
@@ -202,6 +203,8 @@ async function loadRealData() {
   const fOff  = compact ? 'o' : 'offpeak_eur';
   const fTb2  = sv >= 3 ? 't2' : null;
   const fTb4  = sv >= 3 ? 't4' : null;
+  const fWind = sv >= 4 ? 'wp' : null;
+  const fPv   = sv >= 4 ? 'sl' : null;
   const map = new Map();
   for (const r of daily.rows) {
     const z = r[fZone];
@@ -213,6 +216,8 @@ async function loadRealData() {
       offpeak: r[fOff],
       tb2: fTb2 ? r[fTb2] : null,
       tb4: fTb4 ? r[fTb4] : null,
+      wind: fWind ? r[fWind] : null,
+      pv: fPv ? r[fPv] : null,
     });
   }
   state.data = map;
@@ -488,6 +493,8 @@ function profileField(profile) {
     case 'offpeak': return 'offpeak';
     case 'tb2':     return 'tb2';
     case 'tb4':     return 'tb4';
+    case 'pv':      return 'pv';     // solar-weighted capture price
+    case 'wind':    return 'wind';   // wind-weighted capture price (B18+B19)
     case 'baseload':
     default:        return 'mean';
   }
@@ -626,6 +633,7 @@ function updateMapTitle() {
   const profileLabel = ({
     baseload: 'baseload', peak: 'peak', offpeak: 'off-peak',
     tb2: 'TB2 spread', tb4: 'TB4 spread',
+    pv: 'PV capture', wind: 'Wind capture',
   })[state.profile] || state.profile;
   let label;
   if (state.mode === 'day') {
@@ -1114,6 +1122,8 @@ function showDetailPanel(iso3, fullName) {
     { label: 'Off-peak',  prof: 'offpeak'  },
     { label: 'TB2 spread',prof: 'tb2'      },
     { label: 'TB4 spread',prof: 'tb4'      },
+    { label: 'PV capture',prof: 'pv'       },
+    { label: 'Wind capture', prof: 'wind'  },
   ];
   const statsHtml = stats.map(s => {
     const v = getCountryPrice(iso3, state.mode, s.prof);
