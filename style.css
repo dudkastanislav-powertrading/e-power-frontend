@@ -143,13 +143,68 @@ button { font: inherit; cursor: pointer; }
 }
 .map-units { font-size: 11px; color: #8a93a0; }
 
+/* === Map controls bar (layer toggles + region presets + zoom) ===== */
+.map-controls {
+  display: flex; gap: 14px; align-items: center;
+  margin-bottom: 10px; flex-wrap: wrap;
+  padding: 8px 10px;
+  background: #f9fafb;
+  border: 1px solid #e6e8ed;
+  border-radius: 8px;
+}
+.layer-toggles, .zoom-presets, .zoom-controls {
+  display: flex; align-items: center; gap: 4px;
+}
+.ctrl-label {
+  font-size: 10px; font-weight: 600; color: #8a93a0;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  margin-right: 4px;
+}
+.layer-btn, .region-btn {
+  background: #ffffff;
+  border: 1px solid #d8dce3; border-radius: 6px;
+  padding: 5px 10px;
+  font: inherit; font-size: 12px; font-weight: 500;
+  color: #5b6471;
+  cursor: pointer;
+}
+.layer-btn:hover, .region-btn:hover { color: #1f2730; border-color: #b9bfc9; }
+.layer-btn.active, .region-btn.active {
+  background: #f5a623; border-color: #d68712; color: #ffffff;
+}
+.zoom-controls { margin-left: auto; }
+.zoom-btn {
+  width: 32px; height: 32px;
+  background: #ffffff; border: 1px solid #d8dce3; border-radius: 6px;
+  font-size: 16px; font-weight: 600; color: #5b6471;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  line-height: 1;
+}
+.zoom-btn:hover { color: #1f2730; border-color: #b9bfc9; }
+.zoom-btn:active { background: #f0f1f4; }
+
 .map-canvas { position: relative; width: 100%; }
 #europe-map {
   width: 100%; height: auto;
   aspect-ratio: 16 / 10;
-  max-height: calc(100vh - 220px);
+  max-height: calc(100vh - 280px);
   background: #f9fafb;
   border-radius: 6px;
+  cursor: grab;
+}
+#europe-map:active { cursor: grabbing; }
+
+/* Hint shown over the empty corner of the map */
+.map-hint {
+  position: absolute; bottom: 10px; right: 14px;
+  background: rgba(255,255,255,0.92);
+  padding: 4px 8px; border-radius: 4px;
+  font-size: 10px; color: #8a93a0;
+  pointer-events: none;
+  border: 1px solid #e6e8ed;
+}
+@media (max-width: 700px) {
+  .map-hint { display: none; }
 }
 
 /* Country paths — fill comes from SVG attribute, set per-country in app.js */
@@ -160,17 +215,102 @@ button { font: inherit; cursor: pointer; }
 .country-path.has-data { cursor: pointer; }
 .country-path.has-data:hover { stroke: #1f2730; stroke-width: 1.4; }
 .country-label {
-  font-size: 12px; font-weight: 700;
-  fill: #000000; pointer-events: none;
+  font-size: 11px; font-weight: 700;
+  fill: #1f2730; pointer-events: none;
   text-anchor: middle;
   paint-order: stroke fill;
-  stroke: rgba(255,255,255,0.85);
-  stroke-width: 2.5px;
+  stroke: rgba(255,255,255,0.92);
+  stroke-width: 3px;
   stroke-linejoin: round;
 }
-.country-label .price {
-  font-weight: 700; fill: #000000;
+.country-label .code { font-size: 11px; font-weight: 700; fill: #1f2730; }
+.country-label .price { font-size: 10px; font-weight: 500; fill: #1f2730; }
+
+/* === Zone detail slide-out panel ================================== */
+.zone-detail-panel {
+  position: fixed; right: 0; top: 0; bottom: 0;
+  width: 360px; max-width: 90vw;
+  background: #ffffff;
+  border-left: 1px solid #e6e8ed;
+  box-shadow: -4px 0 24px rgba(15, 23, 35, 0.08);
+  padding: 22px 22px 18px;
+  z-index: 50;
+  overflow-y: auto;
+  transform: translateX(0);
+  transition: transform 220ms ease;
 }
+.zone-detail-panel.hidden {
+  transform: translateX(105%);
+  pointer-events: none;
+}
+.detail-close {
+  position: absolute; top: 12px; right: 14px;
+  background: none; border: none;
+  font-size: 24px; line-height: 1;
+  color: #8a93a0; cursor: pointer;
+  padding: 4px 8px;
+}
+.detail-close:hover { color: #1f2730; }
+.zone-detail-panel h3 {
+  margin: 0 0 4px; font-size: 18px; font-weight: 700; color: #1f2730;
+  padding-right: 30px;
+}
+.detail-subtitle {
+  font-size: 12px; color: #8a93a0; margin-bottom: 16px;
+}
+.detail-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.detail-stat {
+  background: #f9fafb;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #e6e8ed;
+}
+.detail-stat-label {
+  font-size: 10px; font-weight: 600; color: #8a93a0;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.detail-stat-value {
+  font-size: 17px; font-weight: 700; color: #1f2730;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+.detail-stat-value.small { font-size: 14px; }
+.detail-stat-value.muted { color: #cdd2da; font-weight: 500; }
+
+.detail-sparkline {
+  margin-bottom: 16px;
+}
+.detail-sparkline-title {
+  font-size: 11px; color: #8a93a0; margin-bottom: 6px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.detail-sparkline svg { width: 100%; height: 80px; display: block; }
+
+.detail-neighbors h4 {
+  margin: 0 0 8px;
+  font-size: 11px; color: #8a93a0;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.detail-neighbors-list {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.detail-neighbor {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  background: #f9fafb;
+  border: 1px solid #f0f1f4;
+}
+.detail-neighbor-name { color: #5b6471; font-weight: 500; }
+.detail-neighbor-spread { font-weight: 600; font-variant-numeric: tabular-nums; }
+.detail-neighbor-spread.pos { color: #1a8a2f; }
+.detail-neighbor-spread.neg { color: #c52f2f; }
 
 /* Legend */
 .map-legend {

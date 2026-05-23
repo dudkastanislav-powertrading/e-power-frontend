@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>E-Power — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=13" />
+  <link rel="stylesheet" href="style.css?v=14" />
 </head>
 <body>
   <header class="topbar">
@@ -78,12 +78,48 @@
         <span class="map-units">EUR / MWh · CET h 1–24</span>
       </div>
 
+      <div class="map-controls">
+        <div class="layer-toggles" role="group" aria-label="Map layers">
+          <span class="ctrl-label">Layers</span>
+          <button type="button" class="layer-btn active" data-layer="prices"
+                  title="Country fill by DAM price">Prices</button>
+          <button type="button" class="layer-btn" data-layer="flows" id="layer-flows"
+                  title="Cross-border spreads — top opportunities only">Cross-border</button>
+          <button type="button" class="layer-btn" data-layer="labels"
+                  title="Show country code + price on map" aria-pressed="true">Labels</button>
+        </div>
+        <div class="zoom-presets" role="group" aria-label="Region presets">
+          <span class="ctrl-label">View</span>
+          <button type="button" class="region-btn active" data-region="all"  title="All Europe">All</button>
+          <button type="button" class="region-btn" data-region="cee"   title="Central / Eastern Europe">CEE</button>
+          <button type="button" class="region-btn" data-region="see"   title="South-Eastern Europe + Balkans">SEE</button>
+          <button type="button" class="region-btn" data-region="italy" title="Italy bidding zones">Italy</button>
+          <button type="button" class="region-btn" data-region="iberia" title="Spain + Portugal">Iberia</button>
+        </div>
+        <div class="zoom-controls" role="group" aria-label="Zoom">
+          <button type="button" class="zoom-btn" id="zoom-out"   aria-label="Zoom out">−</button>
+          <button type="button" class="zoom-btn" id="zoom-reset" aria-label="Reset zoom" title="Reset zoom & pan">⌂</button>
+          <button type="button" class="zoom-btn" id="zoom-in"    aria-label="Zoom in">+</button>
+        </div>
+      </div>
+
       <div class="map-canvas">
         <svg id="europe-map" viewBox="0 0 900 600" preserveAspectRatio="xMidYMid meet"></svg>
         <div class="map-legend" id="map-legend"></div>
         <div class="map-status" id="map-status">Loading map…</div>
+        <div class="map-hint" id="map-hint">Scroll to zoom · drag to pan · click country for details</div>
       </div>
     </section>
+
+    <!-- Slide-out detail panel, fed by clicking a country on the map -->
+    <aside class="zone-detail-panel hidden" id="zone-detail" aria-hidden="true">
+      <button class="detail-close" id="detail-close" aria-label="Close">×</button>
+      <h3 id="detail-title">—</h3>
+      <div class="detail-subtitle" id="detail-subtitle"></div>
+      <div class="detail-stats" id="detail-stats"></div>
+      <div class="detail-sparkline" id="detail-sparkline"></div>
+      <div class="detail-neighbors" id="detail-neighbors"></div>
+    </aside>
 
     <aside class="table-panel">
       <h3>Day-Ahead Market Prices (€/MWh)</h3>
@@ -117,6 +153,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=13" type="module"></script>
+  <script src="app.js?v=14" type="module"></script>
 </body>
 </html>

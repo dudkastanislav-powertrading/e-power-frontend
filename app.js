@@ -116,6 +116,26 @@ const state = {
   data: null,                 // Map<zone, [ {date, mean, peak, offpeak, tb2, tb4} ]>
   geo: null,                  // loaded TopoJSON
   borders: null,              // Map< `${border}|${direction}|${date}` -> row >
+  // UI layer toggles + map navigation
+  showFlows: false,           // cross-border arrows off by default
+  showLabels: true,           // country code + price on map
+  zoomTransform: null,        // d3.zoomTransform from d3.zoom
+  selectedIso3: null,         // ISO3 of country currently shown in detail panel
+};
+
+// How many cross-border arrows to render when flows layer is ON.
+// Keeps the map readable — we pick top N borders by |spread|.
+const TOP_N_BORDERS = 10;
+
+// Region presets — used by [CEE] [SEE] [Italy] [Iberia] buttons.
+// Each value is { centerLon, centerLat, scale } in projection coords.
+// scale multiplies the base projection.scale() of 720.
+const REGION_PRESETS = {
+  all:    { k: 1.0, x: 450, y: 305 },
+  cee:    { k: 2.0, x: 250, y: 100 },   // Poland / Czechia / Hungary
+  see:    { k: 2.3, x: 200, y: -150 },  // Balkans
+  italy:  { k: 2.4, x: 150, y:  -50 },
+  iberia: { k: 2.1, x: 700, y:  -80 },
 };
 
 // Cross-border arrow labels show JAO marginal price (€/MW) for v1 — the
@@ -348,6 +368,57 @@ function bindUI() {
       window.__sort = { key: sortKey, dir: sortDir };
       renderTable();
     });
+  });
+
+  // --- Layer toggles (Prices / Cross-border / Labels) -----------------
+  document.querySelectorAll('.layer-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const layer = btn.dataset.layer;
+      if (layer === 'prices') {
+        // Prices layer is always on (it's the primary view). Button is
+        // decorative — clicking it just confirms the active state.
+        btn.classList.add('active');
+      } else if (layer === 'flows') {
+        state.showFlows = !state.showFlows;
+        btn.classList.toggle('active', state.showFlows);
+      } else if (layer === 'labels') {
+        state.showLabels = !state.showLabels;
+        btn.classList.toggle('active', state.showLabels);
+        btn.setAttribute('aria-pressed', state.showLabels ? 'true' : 'false');
+      }
+      if (state.geo) renderMap();
+    });
+  });
+
+  // --- Region preset buttons -----------------------------------------
+  document.querySelectorAll('.region-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.region-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const preset = REGION_PRESETS[btn.dataset.region] || REGION_PRESETS.all;
+      const t = d3.zoomIdentity.translate(450 - preset.x * preset.k, 305 - preset.y * preset.k).scale(preset.k);
+      d3.select('#europe-map').transition().duration(450).call(window.__zoomBehavior.transform, t);
+    });
+  });
+
+  // --- Zoom buttons --------------------------------------------------
+  document.getElementById('zoom-in').addEventListener('click', () => {
+    d3.select('#europe-map').transition().duration(250).call(window.__zoomBehavior.scaleBy, 1.4);
+  });
+  document.getElementById('zoom-out').addEventListener('click', () => {
+    d3.select('#europe-map').transition().duration(250).call(window.__zoomBehavior.scaleBy, 1 / 1.4);
+  });
+  document.getElementById('zoom-reset').addEventListener('click', () => {
+    document.querySelectorAll('.region-btn').forEach(b => b.classList.toggle('active', b.dataset.region === 'all'));
+    d3.select('#europe-map').transition().duration(400).call(window.__zoomBehavior.transform, d3.zoomIdentity);
+  });
+
+  // --- Detail panel close --------------------------------------------
+  document.getElementById('detail-close').addEventListener('click', () => {
+    closeDetailPanel();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeDetailPanel();
   });
 }
 
@@ -597,15 +668,40 @@ function renderMap() {
   const path = d3.geoPath().projection(projection);
 
   // Adaptive yellow→orange→red scale based on actual visible prices.
-  // This way every Day/MTD/YTD/Custom view shows full contrast even when
-  // all zones cluster in a narrow band like 80..150 EUR.
   const visibleValues = Array.from(COLORED_ISO3)
     .map(iso3 => getCountryPrice(iso3, state.mode, state.profile))
     .filter(v => v != null);
   const colorScale = priceColorScale(visibleValues);
 
+  // Root zoom-wrap group — all map content lives here so d3.zoom can
+  // transform the whole layer cohesively (countries, labels, arrows).
+  const zoomWrap = svg.append('g').attr('class', 'zoom-wrap');
+
+  // Set up d3.zoom on the svg (only once per page life — we stash it on
+  // window so the [+] [–] [Reset] buttons can call it).
+  if (!window.__zoomBehavior) {
+    const zoom = d3.zoom()
+      .scaleExtent([1, 8])
+      .translateExtent([[-200, -200], [1100, 800]])
+      .filter((event) => {
+        // Always allow wheel zoom; don't pan when starting on a country
+        // path (that's a click for the detail panel).
+        if (event.type === 'wheel') return true;
+        return !event.target.classList || !event.target.classList.contains('country-path');
+      })
+      .on('zoom', (event) => {
+        d3.select('.zoom-wrap').attr('transform', event.transform);
+        state.zoomTransform = event.transform;
+      });
+    svg.call(zoom);
+    window.__zoomBehavior = zoom;
+  } else if (state.zoomTransform) {
+    // Restore previous zoom level when re-rendering (mode/profile change)
+    zoomWrap.attr('transform', state.zoomTransform);
+  }
+
   // Country shapes
-  const g = svg.append('g').attr('class', 'countries-layer');
+  const g = zoomWrap.append('g').attr('class', 'countries-layer');
   g.selectAll('path')
     .data(eu)
     .join('path')
@@ -620,12 +716,19 @@ function renderMap() {
         const v = getCountryPrice(iso3, state.mode, state.profile);
         return v == null ? '#e6e8ed' : colorScale(v);
       })
+      .on('click', (event, f) => {
+        const iso3 = isoNum2Iso3[f.id];
+        if (iso3 && COLORED_ISO3.has(iso3)) {
+          showDetailPanel(iso3, f.properties.name);
+          event.stopPropagation();
+        }
+      })
       .append('title')
         .text(f => {
           const iso3 = isoNum2Iso3[f.id] || null;
           if (!iso3 || !COLORED_ISO3.has(iso3)) return f.properties.name;
           const v = getCountryPrice(iso3, state.mode, state.profile);
-          return `${f.properties.name}: ${v == null ? 'no data' : fmt(v) + ' €/MWh'}`;
+          return `${f.properties.name}: ${v == null ? 'no data' : fmt(v) + ' €/MWh'}\nClick for details`;
         });
 
   // Crimea overlay — Natural Earth (the source for world-atlas) draws UA
@@ -673,27 +776,59 @@ function renderMap() {
         return `Ukraine (incl. Crimea): ${v == null ? 'no data' : fmt(v) + ' €/MWh'}`;
       });
 
-  // Country labels (only for zones we colorize) — always black bold for contrast
-  svg.append('g').attr('class', 'labels-layer')
-    .selectAll('text')
-    .data(eu.filter(f => COLORED_ISO3.has(isoNum2Iso3[f.id] || '')))
-    .join('text')
-      .attr('class', 'country-label')
-      .attr('transform', f => `translate(${path.centroid(f)})`)
-      .each(function(f) {
+  // Country labels — compact: 2-letter code + price.
+  // Labels live inside zoomWrap so they zoom/pan with the map.
+  if (state.showLabels) {
+    const labelData = eu
+      .filter(f => COLORED_ISO3.has(isoNum2Iso3[f.id] || ''))
+      .map(f => {
         const iso3 = isoNum2Iso3[f.id];
-        const v = getCountryPrice(iso3, state.mode, state.profile);
-        const sel = d3.select(this);
-        sel.append('tspan').attr('x', 0).attr('dy', '-0.3em').text(f.properties.name);
-        sel.append('tspan').attr('x', 0).attr('dy', '1.05em').attr('class', 'price')
-           .text(v == null ? '—' : fmt(v) + ' €');
+        const c = path.centroid(f);
+        return {
+          iso3,
+          name: f.properties.name,
+          code: iso3ToShortCode(iso3),
+          v: getCountryPrice(iso3, state.mode, state.profile),
+          x: c[0], y: c[1],
+        };
       });
 
-  // Cross-border arrows (drawn on top of country shapes so labels stay readable)
-  renderBorderArrows(svg, eu, path, projection);
+    zoomWrap.append('g').attr('class', 'labels-layer')
+      .selectAll('text')
+      .data(labelData)
+      .join('text')
+        .attr('class', 'country-label')
+        .attr('transform', d => `translate(${d.x},${d.y})`)
+        .each(function(d) {
+          const sel = d3.select(this);
+          sel.append('tspan').attr('x', 0).attr('dy', '-0.2em').attr('class', 'code')
+             .text(d.code);
+          sel.append('tspan').attr('x', 0).attr('dy', '1.05em').attr('class', 'price')
+             .text(d.v == null ? '—' : Math.round(d.v) + '€');
+        });
+  }
+
+  // Cross-border arrows — only when user enabled the flows layer.
+  // Even then we show only the top-N borders by absolute marginal price,
+  // so the map stays readable instead of being covered with 30+ arrows.
+  if (state.showFlows) {
+    renderBorderArrows(zoomWrap, eu, path, projection);
+  }
 
   // Legend
   renderLegend(colorScale);
+}
+
+// Short, readable code shown on the map. ISO3 → 2-letter for the well-known
+// European countries; falls back to ISO3 for anything obscure.
+function iso3ToShortCode(iso3) {
+  const map = {
+    UKR: 'UA', POL: 'PL', ROU: 'RO', HUN: 'HU', SVK: 'SK',
+    GRC: 'GR', BGR: 'BG', HRV: 'HR', SVN: 'SI', SRB: 'RS',
+    ITA: 'IT', DEU: 'DE', ESP: 'ES', AUT: 'AT', CZE: 'CZ',
+    FRA: 'FR', MDA: 'MD', BIH: 'BA', MNE: 'ME', MKD: 'MK',
+  };
+  return map[iso3] || iso3;
 }
 
 // =============================================================
@@ -750,13 +885,16 @@ function renderBorderArrows(svg, euFeatures, path, projection) {
 
   const layer = svg.append('g').attr('class', 'arrows-layer');
 
+  // Build the candidate list first so we can rank by |value| and keep only
+  // the top N — readable map > exhaustive coverage. Rest can be inspected
+  // by clicking individual countries (detail panel shows all neighbors).
+  const candidates = [];
   for (const b of BORDERS_TO_RENDER) {
     const [zA, zB] = b.zones;
     const isoA = ZONE_TO_ISO3[zA], isoB = ZONE_TO_ISO3[zB];
     const cA = iso2centroid.get(isoA), cB = iso2centroid.get(isoB);
     const midLonLat = BORDER_MIDPOINTS[b.border];
     if (!cA || !cB || !midLonLat) continue;
-
     const m = projection(midLonLat);
     if (!m || !isFinite(m[0]) || !isFinite(m[1])) continue;
 
@@ -765,7 +903,19 @@ function renderBorderArrows(svg, euFeatures, path, projection) {
     const rowAB = state.borders ? state.borders.get(`${b.border}|${dirAB}|${state.date}`) : null;
     const rowBA = state.borders ? state.borders.get(`${b.border}|${dirBA}|${state.date}`) : null;
 
-    drawBorderPair(layer, m, cA, cB, rowAB, rowBA, dirAB, dirBA);
+    const vAB = borderValue(rowAB, ARROW_METRIC, state.profile);
+    const vBA = borderValue(rowBA, ARROW_METRIC, state.profile);
+    const rank = Math.max(vAB == null ? 0 : Math.abs(vAB), vBA == null ? 0 : Math.abs(vBA));
+
+    candidates.push({ b, m, cA, cB, rowAB, rowBA, dirAB, dirBA, rank });
+  }
+
+  // Sort by rank (largest first) and take top N
+  candidates.sort((a, b) => b.rank - a.rank);
+  const visible = candidates.slice(0, TOP_N_BORDERS);
+
+  for (const c of visible) {
+    drawBorderPair(layer, c.m, c.cA, c.cB, c.rowAB, c.rowBA, c.dirAB, c.dirBA);
   }
 }
 
@@ -950,6 +1100,152 @@ function renderTable() {
 function fmtCell(v) {
   if (v == null) return '<span style="color:#cdd2da;">—</span>';
   return fmt(v);
+}
+
+// =============================================================
+// Detail panel — opens when a country is clicked on the map.
+// Shows current-mode price for that country with all profiles
+// side by side, a 30-day sparkline, and neighbors with spreads.
+// =============================================================
+function showDetailPanel(iso3, fullName) {
+  state.selectedIso3 = iso3;
+  const panel = document.getElementById('zone-detail');
+  panel.classList.remove('hidden');
+  panel.setAttribute('aria-hidden', 'false');
+
+  document.getElementById('detail-title').textContent = fullName || iso3;
+
+  // List all zones in this country (e.g. Italy has 7 IT-* zones)
+  const zones = ZONES.filter(z => z.iso3 === iso3);
+  const codes = zones.map(z => z.code).join(', ');
+  document.getElementById('detail-subtitle').textContent =
+    codes ? `Zones: ${codes}` : iso3;
+
+  // --- Stats grid: current value for each profile ---------------------
+  const stats = [
+    { label: 'Baseload',  prof: 'baseload' },
+    { label: 'Peak',      prof: 'peak'     },
+    { label: 'Off-peak',  prof: 'offpeak'  },
+    { label: 'TB2 spread',prof: 'tb2'      },
+    { label: 'TB4 spread',prof: 'tb4'      },
+  ];
+  const statsHtml = stats.map(s => {
+    const v = getCountryPrice(iso3, state.mode, s.prof);
+    const isCurrent = s.prof === state.profile;
+    const cls = v == null ? 'muted' : (isCurrent ? '' : 'small');
+    const val = v == null ? '—' : fmt(v) + ' €';
+    return `
+      <div class="detail-stat" style="${isCurrent ? 'border-color:#f5a623;background:#fff8eb;' : ''}">
+        <div class="detail-stat-label">${s.label}${isCurrent ? ' ← selected' : ''}</div>
+        <div class="detail-stat-value ${cls}">${val}</div>
+      </div>`;
+  }).join('');
+  document.getElementById('detail-stats').innerHTML = statsHtml;
+
+  // --- Sparkline: last 30 days mean -----------------------------------
+  // Average over all zones in this country day-by-day.
+  const today = todayISO();
+  const cutoff = ymd(new Date(Date.now() - 30 * 24 * 3600 * 1000));
+  const seriesByDate = new Map();
+  for (const z of zones) {
+    const arr = state.data && state.data.get(z.code);
+    if (!arr) continue;
+    for (const r of arr) {
+      if (r.date < cutoff || r.date > today) continue;
+      if (r.mean == null) continue;
+      if (!seriesByDate.has(r.date)) seriesByDate.set(r.date, []);
+      seriesByDate.get(r.date).push(r.mean);
+    }
+  }
+  const sparkData = [...seriesByDate.entries()]
+    .map(([d, vals]) => ({ d, v: vals.reduce((a, b) => a + b, 0) / vals.length }))
+    .sort((a, b) => a.d.localeCompare(b.d));
+
+  const sparkEl = document.getElementById('detail-sparkline');
+  if (sparkData.length < 2) {
+    sparkEl.innerHTML = '<div class="detail-sparkline-title">30-day trend</div><div style="font-size:12px;color:#8a93a0;">not enough data</div>';
+  } else {
+    const w = 320, h = 80, pad = 8;
+    const xs = d3.scaleLinear().domain([0, sparkData.length - 1]).range([pad, w - pad]);
+    const ys = d3.scaleLinear().domain(d3.extent(sparkData, p => p.v)).range([h - pad, pad]);
+    const line = d3.line().x((_, i) => xs(i)).y(p => ys(p.v)).curve(d3.curveMonotoneX);
+    const lastV = sparkData[sparkData.length - 1].v;
+    const firstV = sparkData[0].v;
+    const trendCls = lastV > firstV ? 'pos' : (lastV < firstV ? 'neg' : '');
+    sparkEl.innerHTML = `
+      <div class="detail-sparkline-title">30-day trend (baseload, € / MWh)</div>
+      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <path d="${line(sparkData)}" fill="none" stroke="#f5a623" stroke-width="1.8"/>
+        <circle cx="${xs(sparkData.length - 1)}" cy="${ys(lastV)}" r="3" fill="#f5a623"/>
+        <text x="${w - pad}" y="${pad + 10}" text-anchor="end" font-size="11" font-weight="600" fill="#1f2730">
+          ${Math.round(lastV)} €
+        </text>
+        <text x="${pad}" y="${h - 2}" font-size="9" fill="#8a93a0">${sparkData[0].d}</text>
+        <text x="${w - pad}" y="${h - 2}" text-anchor="end" font-size="9" fill="#8a93a0">${sparkData[sparkData.length - 1].d}</text>
+      </svg>`;
+  }
+
+  // --- Neighbors: cross-border spreads (DAM spread from this country) -
+  const neighborsHtml = computeNeighborSpreads(iso3);
+  const neighborsEl = document.getElementById('detail-neighbors');
+  if (neighborsHtml) {
+    neighborsEl.innerHTML = `<h4>Spreads to neighbors (€/MWh)</h4><div class="detail-neighbors-list">${neighborsHtml}</div>`;
+  } else {
+    neighborsEl.innerHTML = '';
+  }
+}
+
+function closeDetailPanel() {
+  state.selectedIso3 = null;
+  const panel = document.getElementById('zone-detail');
+  panel.classList.add('hidden');
+  panel.setAttribute('aria-hidden', 'true');
+}
+
+function computeNeighborSpreads(iso3) {
+  // Take this country's mean price (latest available date), compare to
+  // each neighbor zone (also latest mean). Sign convention: positive
+  // means the neighbor is more expensive than us (export opportunity).
+  if (!state.data) return '';
+  const myCode = ZONES.find(z => z.iso3 === iso3)?.code;
+  if (!myCode) return '';
+  const my = lastNonNullMean(myCode);
+  if (my == null) return '';
+
+  // List of zone codes considered "neighbors" (anything we share a border
+  // with via BORDERS_TO_RENDER, plus all IT-* zones for an Italy view).
+  const neighbors = new Set();
+  for (const b of BORDERS_TO_RENDER) {
+    if (b.zones.includes(myCode)) {
+      const other = b.zones.find(z => z !== myCode);
+      if (other) neighbors.add(other);
+    }
+  }
+
+  const rows = [];
+  for (const code of neighbors) {
+    const v = lastNonNullMean(code);
+    if (v == null) continue;
+    const spread = v - my;
+    const cls = spread > 0.5 ? 'pos' : spread < -0.5 ? 'neg' : '';
+    const sign = spread > 0 ? '+' : (spread < 0 ? '−' : '');
+    rows.push(`
+      <div class="detail-neighbor">
+        <span class="detail-neighbor-name">${code}</span>
+        <span class="detail-neighbor-spread ${cls}">${sign}${Math.abs(spread).toFixed(1)} €</span>
+      </div>`);
+  }
+  rows.sort();
+  return rows.join('');
+}
+
+function lastNonNullMean(zoneCode) {
+  const arr = state.data && state.data.get(zoneCode);
+  if (!arr || !arr.length) return null;
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (arr[i].mean != null) return arr[i].mean;
+  }
+  return null;
 }
 
 // =============================================================
