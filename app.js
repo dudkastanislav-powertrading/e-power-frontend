@@ -808,12 +808,9 @@ function renderMap() {
         });
   }
 
-  // Cross-border arrows — only when user enabled the flows layer.
-  // Even then we show only the top-N borders by absolute marginal price,
-  // so the map stays readable instead of being covered with 30+ arrows.
-  if (state.showFlows) {
-    renderBorderArrows(zoomWrap, eu, path, projection);
-  }
+  // Cross-border arrows intentionally not rendered on the map.
+  // Per-country neighbor spreads are still available via the
+  // detail panel (click any country).
 
   // Legend
   renderLegend(colorScale);

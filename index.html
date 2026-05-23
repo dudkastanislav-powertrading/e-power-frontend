@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>E-Power — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=14" />
+  <link rel="stylesheet" href="style.css?v=15" />
 </head>
 <body>
   <header class="topbar">
@@ -83,9 +83,7 @@
           <span class="ctrl-label">Layers</span>
           <button type="button" class="layer-btn active" data-layer="prices"
                   title="Country fill by DAM price">Prices</button>
-          <button type="button" class="layer-btn" data-layer="flows" id="layer-flows"
-                  title="Cross-border spreads — top opportunities only">Cross-border</button>
-          <button type="button" class="layer-btn" data-layer="labels"
+          <button type="button" class="layer-btn active" data-layer="labels"
                   title="Show country code + price on map" aria-pressed="true">Labels</button>
         </div>
         <div class="zoom-presets" role="group" aria-label="Region presets">
@@ -153,6 +151,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=14" type="module"></script>
+  <script src="app.js?v=15" type="module"></script>
 </body>
 </html>
