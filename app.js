@@ -390,17 +390,6 @@ function bindUI() {
     });
   });
 
-  // --- Region preset buttons -----------------------------------------
-  document.querySelectorAll('.region-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.region-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const preset = REGION_PRESETS[btn.dataset.region] || REGION_PRESETS.all;
-      const t = d3.zoomIdentity.translate(450 - preset.x * preset.k, 305 - preset.y * preset.k).scale(preset.k);
-      d3.select('#europe-map').transition().duration(450).call(window.__zoomBehavior.transform, t);
-    });
-  });
-
   // --- Zoom buttons --------------------------------------------------
   document.getElementById('zoom-in').addEventListener('click', () => {
     d3.select('#europe-map').transition().duration(250).call(window.__zoomBehavior.scaleBy, 1.4);
@@ -409,7 +398,6 @@ function bindUI() {
     d3.select('#europe-map').transition().duration(250).call(window.__zoomBehavior.scaleBy, 1 / 1.4);
   });
   document.getElementById('zoom-reset').addEventListener('click', () => {
-    document.querySelectorAll('.region-btn').forEach(b => b.classList.toggle('active', b.dataset.region === 'all'));
     d3.select('#europe-map').transition().duration(400).call(window.__zoomBehavior.transform, d3.zoomIdentity);
   });
 
@@ -1139,48 +1127,12 @@ function showDetailPanel(iso3, fullName) {
   }).join('');
   document.getElementById('detail-stats').innerHTML = statsHtml;
 
-  // --- Sparkline: last 30 days mean -----------------------------------
-  // Average over all zones in this country day-by-day.
-  const today = todayISO();
-  const cutoff = ymd(new Date(Date.now() - 30 * 24 * 3600 * 1000));
-  const seriesByDate = new Map();
-  for (const z of zones) {
-    const arr = state.data && state.data.get(z.code);
-    if (!arr) continue;
-    for (const r of arr) {
-      if (r.date < cutoff || r.date > today) continue;
-      if (r.mean == null) continue;
-      if (!seriesByDate.has(r.date)) seriesByDate.set(r.date, []);
-      seriesByDate.get(r.date).push(r.mean);
-    }
-  }
-  const sparkData = [...seriesByDate.entries()]
-    .map(([d, vals]) => ({ d, v: vals.reduce((a, b) => a + b, 0) / vals.length }))
-    .sort((a, b) => a.d.localeCompare(b.d));
-
-  const sparkEl = document.getElementById('detail-sparkline');
-  if (sparkData.length < 2) {
-    sparkEl.innerHTML = '<div class="detail-sparkline-title">30-day trend</div><div style="font-size:12px;color:#8a93a0;">not enough data</div>';
-  } else {
-    const w = 320, h = 80, pad = 8;
-    const xs = d3.scaleLinear().domain([0, sparkData.length - 1]).range([pad, w - pad]);
-    const ys = d3.scaleLinear().domain(d3.extent(sparkData, p => p.v)).range([h - pad, pad]);
-    const line = d3.line().x((_, i) => xs(i)).y(p => ys(p.v)).curve(d3.curveMonotoneX);
-    const lastV = sparkData[sparkData.length - 1].v;
-    const firstV = sparkData[0].v;
-    const trendCls = lastV > firstV ? 'pos' : (lastV < firstV ? 'neg' : '');
-    sparkEl.innerHTML = `
-      <div class="detail-sparkline-title">30-day trend (baseload, € / MWh)</div>
-      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-        <path d="${line(sparkData)}" fill="none" stroke="#f5a623" stroke-width="1.8"/>
-        <circle cx="${xs(sparkData.length - 1)}" cy="${ys(lastV)}" r="3" fill="#f5a623"/>
-        <text x="${w - pad}" y="${pad + 10}" text-anchor="end" font-size="11" font-weight="600" fill="#1f2730">
-          ${Math.round(lastV)} €
-        </text>
-        <text x="${pad}" y="${h - 2}" font-size="9" fill="#8a93a0">${sparkData[0].d}</text>
-        <text x="${w - pad}" y="${h - 2}" text-anchor="end" font-size="9" fill="#8a93a0">${sparkData[sparkData.length - 1].d}</text>
-      </svg>`;
-  }
+  // --- Sparkline: shape adapts to current mode -----------------------
+  // Day:    daily series for the 30 days ending on the selected day
+  // MTD:    daily series for every day of the selected month
+  // YTD:    monthly aggregates for the 12 months of the selected year
+  // Custom: daily for short ranges (<=180d), monthly for longer
+  renderDetailSparkline(zones);
 
   // --- Neighbors: cross-border spreads (DAM spread from this country) -
   const neighborsHtml = computeNeighborSpreads(iso3);
@@ -1199,41 +1151,262 @@ function closeDetailPanel() {
   panel.setAttribute('aria-hidden', 'true');
 }
 
-function computeNeighborSpreads(iso3) {
-  // Take this country's mean price (latest available date), compare to
-  // each neighbor zone (also latest mean). Sign convention: positive
-  // means the neighbor is more expensive than us (export opportunity).
-  if (!state.data) return '';
-  const myCode = ZONES.find(z => z.iso3 === iso3)?.code;
-  if (!myCode) return '';
-  const my = lastNonNullMean(myCode);
-  if (my == null) return '';
+// =============================================================
+// Sparkline that adapts to the currently selected mode.
+//   day    → 30-day daily trend ending on state.date
+//   mtd    → daily trend for the selected month
+//   ytd    → 12 monthly aggregates for state.year
+//   custom → daily for ranges ≤180d, monthly otherwise
+// Country-level values = average across all zones of the country.
+// =============================================================
+function renderDetailSparkline(zones) {
+  const el = document.getElementById('detail-sparkline');
+  if (!el) return;
+  if (!zones || !zones.length || !state.data) { el.innerHTML = ''; return; }
 
-  // List of zone codes considered "neighbors" (anything we share a border
-  // with via BORDERS_TO_RENDER, plus all IT-* zones for an Italy view).
-  const neighbors = new Set();
-  for (const b of BORDERS_TO_RENDER) {
-    if (b.zones.includes(myCode)) {
-      const other = b.zones.find(z => z !== myCode);
-      if (other) neighbors.add(other);
+  const field = profileField(state.profile);
+  const codes = zones.map(z => z.code);
+
+  let points = [];
+  let title = '';
+
+  if (state.mode === 'day') {
+    const endDate = parseISO(state.date);
+    const startDate = new Date(endDate);
+    startDate.setUTCDate(startDate.getUTCDate() - 29);
+    points = sparkDailyPoints(codes, field, startDate, endDate);
+    title = `30-day trend · ending ${state.date}`;
+  } else if (state.mode === 'mtd') {
+    const startDate = new Date(Date.UTC(state.year, state.monthIdx, 1));
+    let endDate = new Date(Date.UTC(state.year, state.monthIdx + 1, 0));
+    const today = parseISO(todayISO());
+    if (state.year === today.getUTCFullYear() && state.monthIdx === today.getUTCMonth()) {
+      endDate = today;
+    }
+    points = sparkDailyPoints(codes, field, startDate, endDate);
+    const monthName = startDate.toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    title = `Daily trend · ${monthName}`;
+  } else if (state.mode === 'ytd') {
+    const today = parseISO(todayISO());
+    const endMonth = (!state.fullYear && state.year === today.getUTCFullYear())
+      ? today.getUTCMonth() : 11;
+    points = sparkMonthlyPointsForYear(codes, field, state.year, endMonth);
+    title = `Monthly trend · ${state.year}${state.fullYear ? '' : ' (YTD)'}`;
+  } else if (state.mode === 'custom') {
+    if (!state.rangeFrom || !state.rangeTo) { el.innerHTML = ''; return; }
+    const startDate = parseISO(state.rangeFrom);
+    const endDate = parseISO(state.rangeTo);
+    const spanDays = Math.round((endDate - startDate) / 86400000) + 1;
+    if (spanDays <= 180) {
+      points = sparkDailyPoints(codes, field, startDate, endDate);
+      title = `Daily trend · ${state.rangeFrom} → ${state.rangeTo}`;
+    } else {
+      points = sparkMonthlyPointsBetween(codes, field, startDate, endDate);
+      title = `Monthly trend · ${state.rangeFrom} → ${state.rangeTo}`;
     }
   }
 
+  const valid = points.filter(p => p.value != null);
+  if (valid.length === 0) {
+    el.innerHTML = `<div class="detail-sparkline-title">${escapeHtml(title)}</div>
+                    <div style="color:#cdd2da;font-size:12px;">No data for this period.</div>`;
+    return;
+  }
+
+  // SVG sketch — width is responsive via viewBox.
+  const W = 280, H = 80, padX = 8, padY = 14;
+  const minVal = Math.min(...valid.map(p => p.value));
+  const maxVal = Math.max(...valid.map(p => p.value));
+  const spanVal = Math.max(maxVal - minVal, 1);
+  const N = points.length;
+  const xFor = i => padX + (i / Math.max(N - 1, 1)) * (W - 2 * padX);
+  const yFor = v => H - padY - ((v - minVal) / spanVal) * (H - 2 * padY);
+
+  let d = '';
+  let prevDrawn = false;
+  for (let i = 0; i < N; i++) {
+    const v = points[i].value;
+    if (v == null) { prevDrawn = false; continue; }
+    const x = xFor(i), y = yFor(v);
+    d += (prevDrawn ? ' L' : ' M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    prevDrawn = true;
+  }
+
+  // Last valid point: highlighted with a dot + value label
+  let lastIdx = -1;
+  for (let i = N - 1; i >= 0; i--) {
+    if (points[i].value != null) { lastIdx = i; break; }
+  }
+  const lastDot = lastIdx >= 0
+    ? `<circle cx="${xFor(lastIdx).toFixed(1)}" cy="${yFor(points[lastIdx].value).toFixed(1)}" r="3" fill="#f5a623"></circle>
+       <text x="${(xFor(lastIdx) - 4).toFixed(1)}" y="${(yFor(points[lastIdx].value) - 6).toFixed(1)}" text-anchor="end" style="font-size:10px;fill:#5b6271;font-weight:600;">${escapeHtml(fmt(points[lastIdx].value))}</text>`
+    : '';
+
+  // X-axis tick labels — pick ~4 evenly spaced points
+  const tickCount = Math.min(4, N);
+  const tickSet = new Set();
+  for (let k = 0; k < tickCount; k++) {
+    tickSet.add(Math.round((k / Math.max(tickCount - 1, 1)) * (N - 1)));
+  }
+  const ticksSvg = Array.from(tickSet).map(i => {
+    const x = xFor(i).toFixed(1);
+    return `<text x="${x}" y="${H - 2}" text-anchor="middle" style="font-size:9px;fill:#8a93a0;">${escapeHtml(points[i].label || '')}</text>`;
+  }).join('');
+
+  // Min/max labels stuck to left edge
+  const yLabels = `
+    <text x="${padX}" y="${(yFor(maxVal) - 3).toFixed(1)}" style="font-size:9px;fill:#8a93a0;">${escapeHtml(fmt(maxVal))}</text>
+    <text x="${padX}" y="${(yFor(minVal) + 10).toFixed(1)}" style="font-size:9px;fill:#8a93a0;">${escapeHtml(fmt(minVal))}</text>
+  `;
+
+  el.innerHTML = `
+    <div class="detail-sparkline-title">${escapeHtml(title)}</div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      ${yLabels}
+      <path d="${d}" fill="none" stroke="#f5a623" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />
+      ${lastDot}
+      ${ticksSvg}
+    </svg>
+  `;
+}
+
+// Average across all zones of the country for a single day's row.
+function sparkDayValue(codes, field, dateISO) {
+  let sum = 0, n = 0;
+  for (const code of codes) {
+    const series = state.data.get(code);
+    if (!series) continue;
+    const row = series.find(r => r.date === dateISO);
+    if (!row) continue;
+    let v = row[field];
+    if (v == null && (field === 'peak' || field === 'offpeak')) v = row.mean;
+    if (v != null) { sum += v; n++; }
+  }
+  return n > 0 ? round2(sum / n) : null;
+}
+
+// One point per day in [startDate, endDate].
+function sparkDailyPoints(codes, field, startDate, endDate) {
+  const out = [];
+  const cur = new Date(startDate);
+  while (cur <= endDate) {
+    const dateISO = ymd(cur);
+    const value = sparkDayValue(codes, field, dateISO);
+    out.push({
+      date: dateISO,
+      label: cur.toLocaleString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }),
+      value,
+    });
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
+// Aggregate value over a month for the given country's zones.
+function sparkMonthValue(codes, field, year, monthIdx) {
+  const sISO = ymd(new Date(Date.UTC(year, monthIdx, 1)));
+  const eISO = ymd(new Date(Date.UTC(year, monthIdx + 1, 0)));
+  let sum = 0, n = 0;
+  for (const code of codes) {
+    const series = state.data.get(code);
+    if (!series) continue;
+    for (const row of series) {
+      if (row.date < sISO || row.date > eISO) continue;
+      let v = row[field];
+      if (v == null && (field === 'peak' || field === 'offpeak')) v = row.mean;
+      if (v != null) { sum += v; n++; }
+    }
+  }
+  return n > 0 ? round2(sum / n) : null;
+}
+
+// 12 (or fewer) monthly points for a single year.
+function sparkMonthlyPointsForYear(codes, field, year, endMonthInclusive) {
+  const out = [];
+  for (let m = 0; m <= endMonthInclusive; m++) {
+    const sd = new Date(Date.UTC(year, m, 1));
+    out.push({
+      date: ymd(sd),
+      label: sd.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' }),
+      value: sparkMonthValue(codes, field, year, m),
+    });
+  }
+  return out;
+}
+
+// Monthly points spanning startDate..endDate across calendar months.
+function sparkMonthlyPointsBetween(codes, field, startDate, endDate) {
+  const out = [];
+  let y = startDate.getUTCFullYear();
+  let m = startDate.getUTCMonth();
+  const endY = endDate.getUTCFullYear();
+  const endM = endDate.getUTCMonth();
+  while (y < endY || (y === endY && m <= endM)) {
+    const sd = new Date(Date.UTC(y, m, 1));
+    out.push({
+      date: ymd(sd),
+      label: sd.toLocaleString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' }),
+      value: sparkMonthValue(codes, field, y, m),
+    });
+    m++;
+    if (m > 11) { m = 0; y++; }
+  }
+  return out;
+}
+
+function computeNeighborSpreads(iso3) {
+  // Compute mean price for THIS country aggregated over the currently
+  // selected window (Day → that day; MTD → that month; YTD → that year;
+  // Custom → from..to). Then compute the same for each neighbor and
+  // surface the difference.
+  // Sign convention: positive means the neighbor is more expensive
+  // than us (i.e. export opportunity from our side).
+  if (!state.data) return '';
+  const my = getCountryPrice(iso3, state.mode, state.profile);
+  if (my == null) return '';
+
+  // List of zone codes considered "neighbors" — anything we share a
+  // physical border with via BORDERS_TO_RENDER.
+  const myZones = ZONES.filter(z => z.iso3 === iso3).map(z => z.code);
+  const neighbors = new Set();
+  for (const b of BORDERS_TO_RENDER) {
+    for (const myCode of myZones) {
+      if (b.zones.includes(myCode)) {
+        const other = b.zones.find(z => z !== myCode);
+        if (other && !myZones.includes(other)) neighbors.add(other);
+      }
+    }
+  }
+
+  // Aggregate neighbor by iso3 (so e.g. PL is one row, not duplicated by zone)
+  const seenIso = new Set();
   const rows = [];
   for (const code of neighbors) {
-    const v = lastNonNullMean(code);
+    const otherIso = ZONE_TO_ISO3[code];
+    if (!otherIso || seenIso.has(otherIso)) continue;
+    seenIso.add(otherIso);
+    const v = getCountryPrice(otherIso, state.mode, state.profile);
     if (v == null) continue;
     const spread = v - my;
     const cls = spread > 0.5 ? 'pos' : spread < -0.5 ? 'neg' : '';
     const sign = spread > 0 ? '+' : (spread < 0 ? '−' : '');
-    rows.push(`
-      <div class="detail-neighbor">
-        <span class="detail-neighbor-name">${code}</span>
-        <span class="detail-neighbor-spread ${cls}">${sign}${Math.abs(spread).toFixed(1)} €</span>
-      </div>`);
+    const shortCode = iso3ToShortCode(otherIso);
+    rows.push({
+      iso: otherIso,
+      html: `
+        <div class="detail-neighbor">
+          <span class="detail-neighbor-name">${shortCode}</span>
+          <span class="detail-neighbor-spread ${cls}">${sign}${Math.abs(spread).toFixed(1)} €</span>
+        </div>`,
+    });
   }
-  rows.sort();
-  return rows.join('');
+  // Sort by absolute spread descending — biggest opportunities first
+  rows.sort((a, b) => {
+    const va = parseFloat(a.html.match(/[+−](\d+\.\d+)/)?.[1] || '0');
+    const vb = parseFloat(b.html.match(/[+−](\d+\.\d+)/)?.[1] || '0');
+    return vb - va;
+  });
+  return rows.map(r => r.html).join('');
 }
 
 function lastNonNullMean(zoneCode) {
