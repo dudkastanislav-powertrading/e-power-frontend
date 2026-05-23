@@ -344,17 +344,18 @@ function bindUI() {
   fromInput.addEventListener('change', (e) => { state.rangeFrom = e.target.value; rerender(); });
   toInput.addEventListener('change',   (e) => { state.rangeTo   = e.target.value; rerender(); });
 
-  // Top nav stub
+  // Top nav — switch between DAM map and Market Spreads views.
   document.querySelectorAll('.nav-link').forEach(a => {
-    a.addEventListener('click', (e) => {
+    a.addEventListener('click', async (e) => {
       e.preventDefault();
       const view = a.dataset.view;
-      if (view !== 'dam-map') {
-        alert(`"${a.textContent.trim()}" — coming in next iteration. MVP is DAM Map only.`);
+      if (view === 'generation' || view === 'futures') {
+        alert(`"${a.textContent.trim()}" — coming in next iteration.`);
         return;
       }
       document.querySelectorAll('.nav-link').forEach(x => x.classList.remove('active'));
       a.classList.add('active');
+      await showView(view);
     });
   });
 
@@ -1480,3 +1481,715 @@ const isoNum2Iso3 = {
   620:'PRT',642:'ROU',643:'RUS',688:'SRB',703:'SVK',705:'SVN',724:'ESP',
   752:'SWE',756:'CHE',792:'TUR',804:'UKR',826:'GBR',807:'MKD',
 };
+
+// =============================================================
+// =============================================================
+// MARKET SPREADS TAB
+// Two-country hourly DAM spread analysis. Lazy-loaded data files
+// dam_hourly_YYYY.json. State is mostly self-contained in
+// state.spreads; reuses BORDERS_TO_RENDER and state.borders for
+// the JAO marginal-price ("СБС") overlay.
+// =============================================================
+// =============================================================
+
+state.spreads = {
+  isInit: false,
+  hourlyByYear: new Map(),     // year -> Map(`${zone}|${date}` -> Array<number>)
+  loadedYears: new Set(),
+  pendingYearLoads: new Map(), // year -> Promise (dedup concurrent loads)
+  availableYears: [],          // from manifest
+  zoneA: 'HU',
+  zoneB: 'RO',
+  spreadType: 'effective',     // effective | full
+  svs: 'include',              // include | exclude (only matters for stats; bars stay raw)
+  direction: 'a2b',            // a2b | b2a | sym
+  dayDate: null,
+  monthYM: null,               // 'YYYY-MM'
+  yearY: null,                 // number
+};
+
+// ----- View switching ----------------------------------------
+async function showView(view) {
+  const isMap = view === 'dam-map';
+  const isSpreads = view === 'dam-spreads';
+
+  document.querySelector('.map-panel').classList.toggle('hidden', !isMap);
+  document.querySelector('.table-panel').classList.toggle('hidden', !isMap);
+  // Detail panel stays hidden when leaving map; reopens only via clicks
+  if (!isMap) {
+    document.querySelector('.zone-detail-panel').classList.add('hidden');
+  }
+  document.getElementById('spreads-view').classList.toggle('hidden', !isSpreads);
+
+  if (isSpreads) {
+    await initSpreadsView();
+    renderSpreads();
+  }
+}
+
+// Make .hidden = display:none for map-panel/table-panel via inline style
+// (the existing CSS only applies .hidden to specific overlays). We need
+// it to work universally inside the spreads view, so:
+(function injectHiddenRule() {
+  const css = `.map-panel.hidden, .table-panel.hidden { display: none !important; }`;
+  const tag = document.createElement('style');
+  tag.textContent = css;
+  document.head.appendChild(tag);
+})();
+
+// ----- Init -------------------------------------------------
+async function initSpreadsView() {
+  if (state.spreads.isInit) return;
+  populateSpreadsSelects();
+  initSpreadsDefaults();
+  bindSpreadsControls();
+  state.spreads.isInit = true;
+  await loadSpreadsManifest();
+  // Pre-load the year for the default day so the first render has data.
+  if (state.spreads.dayDate) {
+    await loadHourlyYear(yearOfISO(state.spreads.dayDate));
+  }
+}
+
+function populateSpreadsSelects() {
+  const sortedZones = ZONES.slice().sort((a, b) => a.code.localeCompare(b.code));
+  const aSel = document.getElementById('sp-zone-a');
+  const bSel = document.getElementById('sp-zone-b');
+  for (const sel of [aSel, bSel]) {
+    sel.innerHTML = '';
+    for (const z of sortedZones) {
+      const opt = document.createElement('option');
+      opt.value = z.code;
+      opt.textContent = `${z.code} — ${z.name}`;
+      sel.appendChild(opt);
+    }
+  }
+  aSel.value = state.spreads.zoneA;
+  bSel.value = state.spreads.zoneB;
+}
+
+function initSpreadsDefaults() {
+  // Day default: latest data we have (from state.date which is capped to maxDate)
+  state.spreads.dayDate = state.date || todayISO();
+  document.getElementById('sp-day-date').value = state.spreads.dayDate;
+
+  // Month default: month of dayDate
+  const d = parseISO(state.spreads.dayDate);
+  const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  state.spreads.monthYM = ym;
+  document.getElementById('sp-month-pick').value = ym;
+
+  // Year default: current year of dayDate
+  state.spreads.yearY = d.getUTCFullYear();
+}
+
+function bindSpreadsControls() {
+  document.getElementById('sp-zone-a').addEventListener('change', async (e) => {
+    state.spreads.zoneA = e.target.value;
+    await ensureNeededYearsLoaded();
+    renderSpreads();
+  });
+  document.getElementById('sp-zone-b').addEventListener('change', async (e) => {
+    state.spreads.zoneB = e.target.value;
+    await ensureNeededYearsLoaded();
+    renderSpreads();
+  });
+
+  // Toggles
+  document.querySelectorAll('[data-spread-type]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-spread-type]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.spreads.spreadType = btn.dataset.spreadType;
+      renderSpreads();
+    });
+  });
+  document.querySelectorAll('[data-svs]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-svs]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.spreads.svs = btn.dataset.svs;
+      renderSpreads();
+    });
+  });
+  document.querySelectorAll('[data-sp-dir]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-sp-dir]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.spreads.direction = btn.dataset.spDir;
+      renderSpreads();
+    });
+  });
+
+  // Date pickers
+  document.getElementById('sp-day-date').addEventListener('change', async (e) => {
+    state.spreads.dayDate = e.target.value;
+    await ensureNeededYearsLoaded();
+    renderSpreads();
+  });
+  document.getElementById('sp-month-pick').addEventListener('change', async (e) => {
+    state.spreads.monthYM = e.target.value;
+    await ensureNeededYearsLoaded();
+    renderSpreads();
+  });
+  document.getElementById('sp-year-pick').addEventListener('change', async (e) => {
+    state.spreads.yearY = parseInt(e.target.value);
+    await ensureNeededYearsLoaded();
+    renderSpreads();
+  });
+}
+
+async function loadSpreadsManifest() {
+  try {
+    const m = await fetch('./data/manifest.json', { cache: 'no-cache' }).then(r => r.json());
+    const h = m.datasets && m.datasets.dam_hourly;
+    if (h && Array.isArray(h.years)) {
+      state.spreads.availableYears = h.years.map(y => y.year).sort();
+      populateSpYearSelect();
+    } else {
+      setSpStatus('Hourly DAM dataset not yet present in manifest. Regenerate snapshot.', 'error');
+    }
+  } catch (e) {
+    setSpStatus(`Manifest load failed: ${e.message}`, 'error');
+  }
+}
+
+function populateSpYearSelect() {
+  const sel = document.getElementById('sp-year-pick');
+  sel.innerHTML = '';
+  for (const y of state.spreads.availableYears) {
+    const opt = document.createElement('option');
+    opt.value = String(y);
+    opt.textContent = String(y);
+    sel.appendChild(opt);
+  }
+  // Default = year of dayDate, clamped to available
+  let y = state.spreads.yearY;
+  if (!state.spreads.availableYears.includes(y)) {
+    y = state.spreads.availableYears[state.spreads.availableYears.length - 1];
+    state.spreads.yearY = y;
+  }
+  sel.value = String(y);
+}
+
+// ----- Hourly data loading ----------------------------------
+function yearOfISO(iso) { return parseInt(iso.slice(0, 4), 10); }
+
+async function loadHourlyYear(year) {
+  const sp = state.spreads;
+  if (sp.loadedYears.has(year)) return;
+  if (sp.pendingYearLoads.has(year)) return sp.pendingYearLoads.get(year);
+  if (sp.availableYears.length && !sp.availableYears.includes(year)) return;
+
+  setSpStatus(`Loading ${year} hourly data…`);
+  const p = fetch(`./data/dam_hourly_${year}.json`, { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(j => {
+      const idx = new Map();
+      for (const row of (j.rows || [])) {
+        idx.set(`${row.z}|${row.d}`, row.p);
+      }
+      sp.hourlyByYear.set(year, idx);
+      sp.loadedYears.add(year);
+      sp.pendingYearLoads.delete(year);
+      hideSpStatus();
+    })
+    .catch(err => {
+      sp.pendingYearLoads.delete(year);
+      setSpStatus(`Failed to load ${year}: ${err.message}`, 'error');
+    });
+  sp.pendingYearLoads.set(year, p);
+  return p;
+}
+
+async function ensureNeededYearsLoaded() {
+  const sp = state.spreads;
+  const need = new Set();
+  if (sp.dayDate) need.add(yearOfISO(sp.dayDate));
+  if (sp.monthYM) need.add(parseInt(sp.monthYM.slice(0, 4), 10));
+  if (sp.yearY)   need.add(sp.yearY);
+  await Promise.all([...need].map(y => loadHourlyYear(y)));
+}
+
+function setSpStatus(msg, level) {
+  const el = document.getElementById('spreads-status');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  el.classList.toggle('error', level === 'error');
+}
+function hideSpStatus() {
+  document.getElementById('spreads-status').classList.add('hidden');
+}
+
+// ----- Pair spread computation ------------------------------
+// Return array of 24 numbers (or null where no data) for a single date.
+// One side = single zone, no country averaging (zone code is the unit).
+function pairHoursForDate(zoneA, zoneB, isoDate) {
+  const yr = yearOfISO(isoDate);
+  const yearIdx = state.spreads.hourlyByYear.get(yr);
+  if (!yearIdx) return null;
+  const arrA = yearIdx.get(`${zoneA}|${isoDate}`);
+  const arrB = yearIdx.get(`${zoneB}|${isoDate}`);
+  if (!arrA || !arrB) return null;
+  const n = Math.min(arrA.length, arrB.length, 24);
+  const out = new Array(24).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (arrA[i] == null || arrB[i] == null) continue;
+    out[i] = arrB[i] - arrA[i];  // base raw spread (B − A)
+  }
+  return out;
+}
+
+// Apply direction + effective/full transforms to a raw 24h spread array.
+// Returns the displayable array of 24 (or 23/25) values.
+function applySpreadMode(rawArr) {
+  if (!rawArr) return null;
+  const { direction, spreadType } = state.spreads;
+  return rawArr.map(v => {
+    if (v == null) return null;
+    let signed;
+    if (direction === 'a2b') signed = v;
+    else if (direction === 'b2a') signed = -v;
+    else signed = Math.abs(v);             // sym
+    if (spreadType === 'effective') {
+      // In sym mode |v| is already non-negative; effective = same.
+      return Math.max(0, signed);
+    }
+    return signed;
+  });
+}
+
+// Aggregate raw daily 24h arrays into a single 24h profile (avg per hour).
+function avgProfile(arrays) {
+  const sums = new Array(24).fill(0);
+  const cnts = new Array(24).fill(0);
+  for (const arr of arrays) {
+    if (!arr) continue;
+    for (let h = 0; h < 24; h++) {
+      if (arr[h] != null) { sums[h] += arr[h]; cnts[h]++; }
+    }
+  }
+  return sums.map((s, h) => cnts[h] > 0 ? s / cnts[h] : null);
+}
+
+function rawDayArrays(zoneA, zoneB, isoDates) {
+  return isoDates.map(d => pairHoursForDate(zoneA, zoneB, d));
+}
+
+function isoDatesOfMonth(ym) {
+  const [yy, mm] = ym.split('-').map(Number);
+  const last = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+  const out = [];
+  for (let d = 1; d <= last; d++) {
+    out.push(`${yy}-${String(mm).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+  }
+  return out;
+}
+function isoDatesOfYear(y) {
+  const out = [];
+  for (let m = 1; m <= 12; m++) {
+    const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    for (let d = 1; d <= last; d++) {
+      out.push(`${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+    }
+  }
+  return out;
+}
+
+// ----- Aggregations for side-stats table --------------------
+// Returns { base, effective, count, hoursPositive, totalHours }
+function aggregateStats(rawArrays) {
+  let sumSigned = 0, sumEffective = 0, count = 0, positive = 0;
+  for (const arr of rawArrays || []) {
+    if (!arr) continue;
+    for (const v of arr) {
+      if (v == null) continue;
+      // Apply direction transform
+      let signed;
+      if (state.spreads.direction === 'a2b') signed = v;
+      else if (state.spreads.direction === 'b2a') signed = -v;
+      else signed = Math.abs(v);
+      sumSigned += signed;
+      sumEffective += Math.max(0, signed);
+      if (signed > 0) positive++;
+      count++;
+    }
+  }
+  if (count === 0) return { base: null, effective: null, count: 0, positive: 0 };
+  return {
+    base: sumSigned / count,
+    effective: sumEffective / count,
+    count,
+    positive,
+    pctPositive: positive / count,
+  };
+}
+
+// JAO mp average for a given period of ISO dates. Returns € per MWh (we
+// treat marginal_price_eur_mw as €/MWh for net-spread math — matches the
+// energylive convention).
+function jaoMpForPeriod(zoneA, zoneB, isoDates) {
+  if (!state.borders) return null;
+  // Find direction key matching A→B / B→A based on our direction setting
+  const sp = state.spreads;
+  // Look up borders for both possible orientations and pick the one we have.
+  // Border code in JAO is alpha-sorted (e.g. "HU-RO"); direction is "HU>RO".
+  const dirAB = `${zoneA}>${zoneB}`;
+  const dirBA = `${zoneB}>${zoneA}`;
+  const b1 = [zoneA, zoneB].sort().join('-');
+  const wantDirs = [];
+  if (sp.direction === 'a2b') wantDirs.push(dirAB);
+  else if (sp.direction === 'b2a') wantDirs.push(dirBA);
+  else wantDirs.push(dirAB, dirBA);
+
+  let sum = 0, n = 0;
+  for (const d of isoDates) {
+    for (const dir of wantDirs) {
+      const row = state.borders.get(`${b1}|${dir}|${d}`);
+      if (row && row.mb != null) { sum += row.mb; n++; }
+    }
+  }
+  return n > 0 ? sum / n : null;
+}
+
+// ----- Rendering --------------------------------------------
+function renderSpreads() {
+  if (!state.spreads.isInit) return;
+  const { zoneA, zoneB } = state.spreads;
+  if (zoneA === zoneB) {
+    setSpStatus('Pick two different countries.', 'error');
+    return;
+  }
+  hideSpStatus();
+  renderSpDay();
+  renderSpMonth();
+  renderSpYear();
+  renderSpAnalysis();
+}
+
+function pairLabel() {
+  const { zoneA, zoneB, direction } = state.spreads;
+  if (direction === 'a2b') return `${zoneA} → ${zoneB}`;
+  if (direction === 'b2a') return `${zoneB} → ${zoneA}`;
+  return `${zoneA} ↔ ${zoneB}`;
+}
+
+function sectionTitle(prefix, periodLabel) {
+  const { spreadType } = state.spreads;
+  const kind = spreadType === 'effective' ? 'Effective' : 'Full';
+  return `${prefix}: ${periodLabel} · ${pairLabel()} · ${kind}`;
+}
+
+// ----- Day section ------------------------------------------
+function renderSpDay() {
+  const { zoneA, zoneB, dayDate } = state.spreads;
+  document.getElementById('sp-day-title').textContent =
+    sectionTitle('Day', dayDate);
+
+  const raw = pairHoursForDate(zoneA, zoneB, dayDate);
+  const displayArr = applySpreadMode(raw);
+  drawHourBars('sp-day-chart', displayArr, { axis: 'hours' });
+
+  const stats = aggregateStats(raw ? [raw] : []);
+  const mp = jaoMpForPeriod(zoneA, zoneB, [dayDate]);
+  fillSideStats('sp-day-stats', `Day ${dayDate}`, stats, mp);
+}
+
+// ----- Month section ----------------------------------------
+function renderSpMonth() {
+  const { zoneA, zoneB, monthYM } = state.spreads;
+  document.getElementById('sp-month-title').textContent =
+    sectionTitle('Month', monthYM);
+
+  const days = isoDatesOfMonth(monthYM);
+  const dayArrays = rawDayArrays(zoneA, zoneB, days);
+
+  // Daily series: one bar per day = avg over hours of displayed value
+  const dailyVals = dayArrays.map(arr => {
+    const disp = applySpreadMode(arr);
+    if (!disp) return null;
+    let s = 0, n = 0;
+    for (const v of disp) { if (v != null) { s += v; n++; } }
+    return n > 0 ? s / n : null;
+  });
+  drawDailyBars('sp-month-daily', dailyVals, days);
+
+  // 24h profile averaged across the month
+  const displayed = dayArrays.map(applySpreadMode);
+  const profile = avgProfile(displayed);
+  drawHourBars('sp-month-hourly', profile, { axis: 'hours' });
+
+  const stats = aggregateStats(dayArrays);
+  const mp = jaoMpForPeriod(zoneA, zoneB, days);
+  fillSideStats('sp-month-stats', `Month ${monthYM}`, stats, mp);
+}
+
+// ----- Year section -----------------------------------------
+function renderSpYear() {
+  const { zoneA, zoneB, yearY } = state.spreads;
+  document.getElementById('sp-year-title').textContent =
+    sectionTitle('Year', String(yearY));
+
+  const dates = isoDatesOfYear(yearY);
+  // Cap to today if it's the current year
+  const today = todayISO();
+  const datesEff = dates.filter(d => d <= today);
+  const dayArrays = rawDayArrays(zoneA, zoneB, datesEff);
+
+  // Monthly aggregates
+  const months = [];
+  for (let m = 0; m < 12; m++) {
+    const yyyy_mm = `${yearY}-${String(m + 1).padStart(2, '0')}`;
+    const idxInPeriod = [];
+    for (let i = 0; i < datesEff.length; i++) {
+      if (datesEff[i].slice(0, 7) === yyyy_mm) idxInPeriod.push(i);
+    }
+    let s = 0, n = 0;
+    for (const i of idxInPeriod) {
+      const disp = applySpreadMode(dayArrays[i]);
+      if (!disp) continue;
+      for (const v of disp) { if (v != null) { s += v; n++; } }
+    }
+    months.push({ ym: yyyy_mm, val: n > 0 ? s / n : null });
+  }
+  drawMonthlyBars('sp-year-monthly', months);
+
+  // 24h profile averaged across the year
+  const displayed = dayArrays.map(applySpreadMode);
+  const profile = avgProfile(displayed);
+  drawHourBars('sp-year-hourly', profile, { axis: 'hours' });
+
+  const stats = aggregateStats(dayArrays);
+  const mp = jaoMpForPeriod(zoneA, zoneB, datesEff);
+  fillSideStats('sp-year-stats', `Year ${yearY}`, stats, mp);
+}
+
+// ----- Analysis block ---------------------------------------
+function renderSpAnalysis() {
+  const { zoneA, zoneB, yearY, monthYM, dayDate, spreadType, svs, direction } = state.spreads;
+
+  const periodLabel = `Year ${yearY}`;
+  const dates = isoDatesOfYear(yearY).filter(d => d <= todayISO());
+  const dayArrays = rawDayArrays(zoneA, zoneB, dates);
+
+  // Best hour-of-day (highest avg effective)
+  const profile = avgProfile(dayArrays.map(applySpreadMode));
+  let bestH = -1, bestV = -Infinity;
+  let worstH = -1, worstV = Infinity;
+  for (let h = 0; h < 24; h++) {
+    if (profile[h] == null) continue;
+    if (profile[h] > bestV) { bestV = profile[h]; bestH = h; }
+    if (profile[h] < worstV) { worstV = profile[h]; worstH = h; }
+  }
+
+  // Day with biggest positive total
+  let bestDay = null, bestDayVal = -Infinity;
+  for (let i = 0; i < dayArrays.length; i++) {
+    const disp = applySpreadMode(dayArrays[i]);
+    if (!disp) continue;
+    let s = 0;
+    for (const v of disp) { if (v != null) s += v; }
+    if (s > bestDayVal) { bestDayVal = s; bestDay = dates[i]; }
+  }
+
+  const stats = aggregateStats(dayArrays);
+  const mp = jaoMpForPeriod(zoneA, zoneB, dates);
+
+  const netAvg = (stats.effective != null && mp != null && svs === 'include')
+    ? stats.effective - mp
+    : (stats.effective != null ? stats.effective : null);
+
+  const items = [
+    {
+      lbl: 'Base spread (avg)',
+      val: stats.base != null ? `${stats.base.toFixed(2)} €/MWh` : '—',
+      sub: 'Signed average over hours',
+    },
+    {
+      lbl: 'Effective spread (avg)',
+      val: stats.effective != null ? `${stats.effective.toFixed(2)} €/MWh` : '—',
+      sub: 'max(0, signed) averaged',
+    },
+    {
+      lbl: '% positive hours',
+      val: stats.pctPositive != null ? `${(stats.pctPositive * 100).toFixed(1)}%` : '—',
+      sub: `${stats.positive ?? 0} of ${stats.count ?? 0} hours`,
+    },
+    {
+      lbl: 'СБС (avg JAO mp)',
+      val: mp != null ? `${mp.toFixed(2)} €/MWh` : 'n/a',
+      sub: 'Daily mp averaged over period',
+    },
+    {
+      lbl: 'Net spread',
+      val: netAvg != null ? `${netAvg.toFixed(2)} €/MWh` : '—',
+      sub: svs === 'include' ? 'effective − СБС' : 'effective only',
+    },
+    {
+      lbl: 'Best hour (CET)',
+      val: bestH >= 0 ? `${bestH + 1}h · ${bestV.toFixed(1)} €` : '—',
+      sub: 'Highest avg effective spread',
+    },
+    {
+      lbl: 'Worst hour (CET)',
+      val: worstH >= 0 ? `${worstH + 1}h · ${worstV.toFixed(1)} €` : '—',
+      sub: 'Lowest avg displayed value',
+    },
+    {
+      lbl: 'Best day',
+      val: bestDay && bestDayVal > -Infinity ? `${bestDay} · ${bestDayVal.toFixed(0)} €` : '—',
+      sub: 'Total effective spread (€/MWh·24h)',
+    },
+  ];
+
+  document.getElementById('sp-analysis-body').innerHTML =
+    `<div class="sp-analysis-grid">` +
+    items.map(it => `
+      <div class="sp-analysis-stat">
+        <div class="lbl">${escapeHtml(it.lbl)}</div>
+        <div class="val">${escapeHtml(it.val)}</div>
+        <div class="sub">${escapeHtml(it.sub)}</div>
+      </div>`).join('') +
+    `</div>` +
+    `<p style="margin-top:10px;font-size:12px;color:#5b6271;">
+       Period: ${periodLabel} · Pair: ${escapeHtml(pairLabel())} · Mode: ${escapeHtml(spreadType)} · СБС: ${escapeHtml(svs)} · Direction: ${escapeHtml(direction)}.
+     </p>`;
+}
+
+// ----- Side-stats panel -------------------------------------
+function fillSideStats(elId, periodLabel, stats, mp) {
+  const { svs } = state.spreads;
+  const fmtV = v => v == null ? '<span class="val muted">—</span>'
+                              : `<span class="val">${v.toFixed(2)} €</span>`;
+  const netAvg = (stats.effective != null && mp != null && svs === 'include')
+    ? stats.effective - mp
+    : (stats.effective != null ? stats.effective : null);
+  const html = `
+    <h4>${escapeHtml(periodLabel)}</h4>
+    <div class="sp-stat-row"><span class="lbl">Base spread</span>${fmtV(stats.base)}</div>
+    <div class="sp-stat-row"><span class="lbl">Effective avg</span>${fmtV(stats.effective)}</div>
+    <div class="sp-stat-row"><span class="lbl">СБС (JAO mp)</span>${fmtV(mp)}</div>
+    <div class="sp-stat-row net"><span class="lbl">Net spread</span>${fmtV(netAvg)}</div>
+    <div class="sp-stat-row"><span class="lbl">Hours analysed</span><span class="val">${stats.count ?? 0}</span></div>
+    <div class="sp-stat-row"><span class="lbl">Positive hours</span><span class="val">${stats.positive ?? 0} (${stats.pctPositive ? (stats.pctPositive * 100).toFixed(0) : 0}%)</span></div>
+  `;
+  document.getElementById(elId).innerHTML = html;
+}
+
+// ----- SVG bar drawers --------------------------------------
+// Common: vertically centered axis, positive green, negative red, zero line
+function drawHourBars(svgId, arr, opts) {
+  const svg = d3.select(`#${svgId}`);
+  svg.selectAll('*').remove();
+  const vb = svg.attr('viewBox').split(/\s+/).map(Number);
+  const W = vb[2], H = vb[3];
+  const padL = 40, padR = 10, padT = 14, padB = 26;
+  if (!arr) {
+    svg.append('text')
+       .attr('x', W / 2).attr('y', H / 2).attr('text-anchor', 'middle')
+       .attr('fill', '#cdd2da').attr('font-size', 14)
+       .text('No data');
+    return;
+  }
+  drawBarsAxis(svg, arr, { W, H, padL, padR, padT, padB,
+    xLabel: i => String(i + 1), xLabelEvery: 1, xAxisTitle: 'Hour (CET 1..24)' });
+}
+
+function drawDailyBars(svgId, arr, isoDates) {
+  const svg = d3.select(`#${svgId}`);
+  svg.selectAll('*').remove();
+  const vb = svg.attr('viewBox').split(/\s+/).map(Number);
+  const W = vb[2], H = vb[3];
+  const padL = 36, padR = 10, padT = 14, padB = 28;
+  if (!arr || arr.every(v => v == null)) {
+    svg.append('text').attr('x', W/2).attr('y', H/2).attr('text-anchor','middle')
+       .attr('fill','#cdd2da').attr('font-size',12).text('No data');
+    return;
+  }
+  drawBarsAxis(svg, arr, { W, H, padL, padR, padT, padB,
+    xLabel: i => String(i + 1),
+    xLabelEvery: arr.length > 20 ? 5 : 2,
+    xAxisTitle: 'Day' });
+}
+
+function drawMonthlyBars(svgId, months) {
+  const svg = d3.select(`#${svgId}`);
+  svg.selectAll('*').remove();
+  const vb = svg.attr('viewBox').split(/\s+/).map(Number);
+  const W = vb[2], H = vb[3];
+  const padL = 36, padR = 10, padT = 14, padB = 28;
+  const arr = months.map(m => m.val);
+  if (arr.every(v => v == null)) {
+    svg.append('text').attr('x', W/2).attr('y', H/2).attr('text-anchor','middle')
+       .attr('fill','#cdd2da').attr('font-size',12).text('No data');
+    return;
+  }
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  drawBarsAxis(svg, arr, { W, H, padL, padR, padT, padB,
+    xLabel: i => monthLabels[i] || '',
+    xLabelEvery: 1, xAxisTitle: 'Month' });
+}
+
+// Core SVG bar plotter with zero-line axis.
+function drawBarsAxis(svg, arr, opts) {
+  const { W, H, padL, padR, padT, padB, xLabel, xLabelEvery, xAxisTitle } = opts;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  // Determine y range
+  const valid = arr.filter(v => v != null);
+  let yMin = Math.min(0, ...valid);
+  let yMax = Math.max(0, ...valid);
+  if (yMin === yMax) { yMin -= 1; yMax += 1; }
+  // Add headroom 8%
+  const pad = (yMax - yMin) * 0.08;
+  yMin -= pad; yMax += pad;
+  const yScale = v => padT + innerH * (1 - (v - yMin) / (yMax - yMin));
+  const zeroY = yScale(0);
+
+  const n = arr.length;
+  const barW = innerW / n * 0.78;
+  const step = innerW / n;
+
+  // Y axis labels: min/max/zero
+  const yTicks = [yMax, 0, yMin].filter((v, i, a) => a.indexOf(v) === i);
+  yTicks.forEach(v => {
+    const y = yScale(v);
+    svg.append('line').attr('x1', padL).attr('x2', W - padR)
+       .attr('y1', y).attr('y2', y)
+       .attr('stroke', v === 0 ? '#5b6271' : '#eef0f4')
+       .attr('stroke-width', v === 0 ? 1 : 1);
+    svg.append('text').attr('x', padL - 4).attr('y', y + 3)
+       .attr('text-anchor', 'end').attr('font-size', 10)
+       .attr('fill', '#8a93a0')
+       .text(v.toFixed(1));
+  });
+
+  // Bars
+  for (let i = 0; i < n; i++) {
+    const v = arr[i];
+    if (v == null) continue;
+    const x = padL + step * i + (step - barW) / 2;
+    const y = v >= 0 ? yScale(v) : zeroY;
+    const h = Math.abs(yScale(v) - zeroY);
+    const color = v >= 0 ? '#3aa775' : '#d8463a';
+    svg.append('rect').attr('x', x).attr('y', y)
+       .attr('width', barW).attr('height', h)
+       .attr('fill', color).attr('opacity', 0.92)
+       .append('title').text(`${i + 1}: ${v.toFixed(2)}`);
+  }
+
+  // X labels
+  for (let i = 0; i < n; i++) {
+    if (xLabelEvery && (i % xLabelEvery !== 0) && i !== n - 1) continue;
+    const x = padL + step * i + step / 2;
+    svg.append('text').attr('x', x).attr('y', H - 10)
+       .attr('text-anchor', 'middle').attr('font-size', 10)
+       .attr('fill', '#8a93a0').text(xLabel(i));
+  }
+  if (xAxisTitle) {
+    svg.append('text').attr('x', (W - padR + padL) / 2).attr('y', H - 1)
+       .attr('text-anchor', 'middle').attr('font-size', 10)
+       .attr('fill', '#5b6271').attr('font-weight', 600)
+       .text('');
+  }
+}

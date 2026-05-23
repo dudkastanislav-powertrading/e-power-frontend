@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>E-Power — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=16" />
+  <link rel="stylesheet" href="style.css?v=17" />
 </head>
 <body>
   <header class="topbar">
@@ -131,6 +131,123 @@
         <span class="data-source">data: ENTSO-E · NBU · ICE</span>
       </div>
     </aside>
+
+    <!-- =================================================== -->
+    <!-- Market Spreads view (hidden by default; nav toggles) -->
+    <!-- =================================================== -->
+    <section class="spreads-panel hidden" id="spreads-view">
+      <!-- Top global controls: A/B pair, spread type, СБС, direction -->
+      <div class="spreads-toolbar">
+        <div class="sp-ctrl">
+          <label for="sp-zone-a">Country A (buy)</label>
+          <select id="sp-zone-a"></select>
+        </div>
+        <div class="sp-ctrl">
+          <label for="sp-zone-b">Country B (sell)</label>
+          <select id="sp-zone-b"></select>
+        </div>
+        <div class="sp-ctrl">
+          <label>Spread</label>
+          <div class="seg-toggle" role="group" aria-label="Spread type">
+            <button type="button" class="seg-btn active" data-spread-type="effective"
+                    title="Only count hours where the receiving zone is more expensive">Effective</button>
+            <button type="button" class="seg-btn" data-spread-type="full"
+                    title="Signed spread (negative hours included)">Full</button>
+          </div>
+        </div>
+        <div class="sp-ctrl">
+          <label>СБС (JAO mp)</label>
+          <div class="seg-toggle" role="group" aria-label="SBS inclusion">
+            <button type="button" class="seg-btn active" data-svs="include"
+                    title="Subtract JAO marginal price from effective spread">Include</button>
+            <button type="button" class="seg-btn" data-svs="exclude"
+                    title="Show effective spread without JAO cost">Exclude</button>
+          </div>
+        </div>
+        <div class="sp-ctrl">
+          <label>Direction</label>
+          <div class="seg-toggle" role="group" aria-label="Direction">
+            <button type="button" class="seg-btn active" data-sp-dir="a2b" title="A → B (sell B, buy A)">A → B</button>
+            <button type="button" class="seg-btn" data-sp-dir="b2a" title="B → A">B → A</button>
+            <button type="button" class="seg-btn" data-sp-dir="sym" title="Symmetric — average of both">Symmetric</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="spreads-status" id="spreads-status">Pick two countries to start.</div>
+
+      <!-- === DAY section ============================================= -->
+      <div class="spreads-section" id="sp-day-section">
+        <div class="sp-section-head">
+          <h3 id="sp-day-title">Day: —</h3>
+          <div class="sp-section-ctrl">
+            <label for="sp-day-date">Day</label>
+            <input type="date" id="sp-day-date" />
+          </div>
+        </div>
+        <div class="sp-chart-row">
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">Hourly spread profile (CET 1–24)</div>
+            <svg id="sp-day-chart" viewBox="0 0 760 280" preserveAspectRatio="none"></svg>
+          </div>
+          <aside class="sp-side-table" id="sp-day-stats">—</aside>
+        </div>
+      </div>
+
+      <!-- === MONTH section ========================================== -->
+      <div class="spreads-section" id="sp-month-section">
+        <div class="sp-section-head">
+          <h3 id="sp-month-title">Month: —</h3>
+          <div class="sp-section-ctrl">
+            <label for="sp-month-pick">Month</label>
+            <input type="month" id="sp-month-pick" />
+          </div>
+        </div>
+        <div class="sp-chart-row two">
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">Daily averages</div>
+            <svg id="sp-month-daily" viewBox="0 0 380 240" preserveAspectRatio="none"></svg>
+          </div>
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">24h profile (averaged over month)</div>
+            <svg id="sp-month-hourly" viewBox="0 0 380 240" preserveAspectRatio="none"></svg>
+          </div>
+          <aside class="sp-side-table" id="sp-month-stats">—</aside>
+        </div>
+      </div>
+
+      <!-- === YEAR section =========================================== -->
+      <div class="spreads-section" id="sp-year-section">
+        <div class="sp-section-head">
+          <h3 id="sp-year-title">Year: —</h3>
+          <div class="sp-section-ctrl">
+            <label for="sp-year-pick">Year</label>
+            <select id="sp-year-pick"></select>
+          </div>
+        </div>
+        <div class="sp-chart-row two">
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">Monthly averages</div>
+            <svg id="sp-year-monthly" viewBox="0 0 380 240" preserveAspectRatio="none"></svg>
+          </div>
+          <div class="sp-chart-wrap">
+            <div class="sp-chart-title">24h profile (averaged over year)</div>
+            <svg id="sp-year-hourly" viewBox="0 0 380 240" preserveAspectRatio="none"></svg>
+          </div>
+          <aside class="sp-side-table" id="sp-year-stats">—</aside>
+        </div>
+      </div>
+
+      <!-- === ANALYSIS BLOCK ========================================= -->
+      <div class="spreads-analysis" id="sp-analysis">
+        <h3>Effective spread analysis</h3>
+        <div id="sp-analysis-body">—</div>
+      </div>
+
+      <div class="spreads-footer">
+        <span>Time zone: CET · Sources: local Postgres (curated.dam_price + marts.jao_da_daily)</span>
+      </div>
+    </section>
   </main>
 
   <footer class="footnote">
@@ -143,6 +260,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=16" type="module"></script>
+  <script src="app.js?v=17" type="module"></script>
 </body>
 </html>
