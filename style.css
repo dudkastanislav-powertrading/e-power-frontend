@@ -21,9 +21,42 @@ button { font: inherit; cursor: pointer; }
   border-bottom: 1px solid #e6e8ed;
   position: sticky; top: 0; z-index: 10;
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; }
-.brand-mark { color: #f5a623; font-size: 22px; }
-.brand-name { letter-spacing: 1.5px; }
+/* === Brand wordmark — "RedKlen" =================================
+   Aesthetic inspired by Citadel / Jane Street / Bloomberg / Linear:
+   no icon clutter, a single colored accent block, mixed weight on
+   the wordmark (bold/light pairing reads as authored, not generic),
+   tight letter-spacing, deep charcoal text. The brand color (#c52f2f)
+   is reserved for the mark only — typography stays disciplined. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  user-select: none;
+  padding-right: 18px;
+  border-right: 1px solid #eef0f4;
+  margin-right: 6px;
+}
+.brand-mark {
+  width: 10px;
+  height: 10px;
+  background: #c52f2f;
+  border-radius: 1.5px;
+  display: inline-block;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(197, 47, 47, 0.10);
+}
+.brand-name {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display",
+               "Segoe UI", system-ui, sans-serif;
+  font-size: 18px;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  color: #1a1f2e;
+  display: inline-flex;
+  align-items: baseline;
+}
+.brand-name-strong { font-weight: 800; }
+.brand-name-light  { font-weight: 400; color: #4a5568; }
 .topnav { display: flex; gap: 18px; flex: 1; }
 .nav-link {
   padding: 6px 4px;

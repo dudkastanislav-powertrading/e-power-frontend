@@ -3,14 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>E-Power — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=23" />
+  <title>RedKlen — European Power Markets</title>
+  <link rel="stylesheet" href="style.css?v=24" />
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark">⚡</span>
-      <span class="brand-name">E-POWER</span>
+    <div class="brand" aria-label="RedKlen">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">
+        <span class="brand-name-strong">Red</span><span class="brand-name-light">Klen</span>
+      </span>
     </div>
     <nav class="topnav">
       <a class="nav-link active" data-view="dam-map">Day-Ahead Map</a>
@@ -361,7 +363,7 @@
   </main>
 
   <footer class="footnote">
-    <span>E-Power · self-hosted European power markets dashboard</span>
+    <span>RedKlen · European power markets intelligence</span>
     <span>build: <code id="build-id">dev</code></span>
   </footer>
 
@@ -370,6 +372,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=23" type="module"></script>
+  <script src="app.js?v=24" type="module"></script>
 </body>
 </html>
