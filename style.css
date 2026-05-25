@@ -603,7 +603,8 @@ button { font: inherit; cursor: pointer; }
   height: 240px;
   display: block;
 }
-#sp-day-chart { height: 280px; }
+#sp-day-chart,
+#gen-day-chart { height: 280px; }
 
 .sp-side-table {
   background: #fafbfc;

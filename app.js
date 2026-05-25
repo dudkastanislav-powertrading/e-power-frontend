@@ -160,6 +160,24 @@ document.addEventListener('DOMContentLoaded', async () => {
       'MOCK data (snapshot not found) · ' + new Date().toLocaleString('en-GB');
   }
   loadGeographyAndRender();
+
+  // Re-render the chart-heavy views on window resize so SVG viewBoxes
+  // stay 1:1 with their container pixels. Debounced to avoid thrashing.
+  let __resizeTimer = null;
+  window.addEventListener('resize', () => {
+    if (__resizeTimer) clearTimeout(__resizeTimer);
+    __resizeTimer = setTimeout(() => {
+      const spreadsVisible = !document.getElementById('spreads-view').classList.contains('hidden');
+      const genPanel = document.getElementById('generation-view');
+      const genVisible = genPanel && !genPanel.classList.contains('hidden');
+      if (spreadsVisible && state.spreads && state.spreads.isInit) {
+        try { renderSpreads(); } catch (e) { console.warn(e); }
+      }
+      if (genVisible && state.gen && state.gen.isInit) {
+        try { renderGen(); } catch (e) { console.warn(e); }
+      }
+    }, 200);
+  });
 });
 
 async function loadRealData() {
@@ -2327,12 +2345,26 @@ function fillSideStats(elId, periodLabel, stats, mp) {
 
 // ----- SVG bar drawers --------------------------------------
 // Common: vertically centered axis, positive green, negative red, zero line.
+// Returns chart dimensions in CSS pixels. Sets the SVG viewBox to match
+// so 1 user-coord unit = 1 CSS pixel — text and ticks render crisply
+// regardless of container width. Falls back to a hidden-panel-safe default
+// when the parent is still display:none at measure time.
+function spChartDims(svg, fallbackH) {
+  const node = svg.node();
+  const rect = node.getBoundingClientRect();
+  const cssH = parseFloat(getComputedStyle(node).height) || fallbackH || 240;
+  const W = Math.max(rect.width || 0, 240);
+  const H = Math.max(cssH, 120);
+  svg.attr('viewBox', `0 0 ${W} ${H}`)
+     .attr('preserveAspectRatio', 'xMidYMid meet');
+  return { W, H };
+}
+
 // Each drawer wires a tooltip callback that formats the bar context.
 function drawHourBars(svgId, arr, opts) {
   const svg = d3.select(`#${svgId}`);
   svg.selectAll('*').remove();
-  const vb = svg.attr('viewBox').split(/\s+/).map(Number);
-  const W = vb[2], H = vb[3];
+  const { W, H } = spChartDims(svg, 280);
   // When a line overlay is supplied we need extra padding on the right
   // for the second y-axis labels.
   const lineArr = opts && opts.lineArr;
@@ -2376,8 +2408,7 @@ function drawHourBars(svgId, arr, opts) {
 function drawDailyBars(svgId, arr, isoDates) {
   const svg = d3.select(`#${svgId}`);
   svg.selectAll('*').remove();
-  const vb = svg.attr('viewBox').split(/\s+/).map(Number);
-  const W = vb[2], H = vb[3];
+  const { W, H } = spChartDims(svg, 240);
   const padL = 38, padR = 10, padT = 14, padB = 30;
   if (!arr || arr.every(v => v == null)) {
     svg.append('text').attr('x', W/2).attr('y', H/2).attr('text-anchor','middle')
@@ -2403,8 +2434,7 @@ function drawDailyBars(svgId, arr, isoDates) {
 function drawMonthlyBars(svgId, months) {
   const svg = d3.select(`#${svgId}`);
   svg.selectAll('*').remove();
-  const vb = svg.attr('viewBox').split(/\s+/).map(Number);
-  const W = vb[2], H = vb[3];
+  const { W, H } = spChartDims(svg, 240);
   const padL = 38, padR = 10, padT = 14, padB = 30;
   const arr = months.map(m => m.val);
   if (arr.every(v => v == null)) {
@@ -3178,8 +3208,10 @@ function drawGenLineChart(svgId, points, opts) {
   const svg = d3.select(`#${svgId}`);
   svg.selectAll('*').remove();
   svg.classed('gen-svg', true);
-  const vb = svg.attr('viewBox').split(/\s+/).map(Number);
-  const W = vb[2], H = vb[3];
+  // For the day-section chart we want a taller canvas (280px); CSS sets 240
+  // for other gen charts so we fall back to that.
+  const isDayChart = svgId === 'gen-day-chart';
+  const { W, H } = spChartDims(svg, isDayChart ? 280 : 240);
   const padL = 44, padR = 14, padT = 14, padB = 30;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
