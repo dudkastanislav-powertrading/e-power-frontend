@@ -2721,7 +2721,9 @@ state.gen = {
 };
 
 // Production-type dropdown configuration. 'WIND' is a pseudo-type that
-// combines B18+B19 client-side.
+// combines B18+B19 client-side. 'IMP' and 'EXP' are commercial cross-
+// border flow aggregates (curated.commercial_exchange), not generation;
+// the backend already sums them across all partner zones per hour.
 const GEN_TYPE_OPTIONS = [
   { code: 'B16',  label: 'Solar' },
   { code: 'WIND', label: 'Wind (Onshore + Offshore)' },
@@ -2733,6 +2735,8 @@ const GEN_TYPE_OPTIONS = [
   { code: 'B05',  label: 'Fossil Hard Coal' },
   { code: 'B02',  label: 'Brown Coal / Lignite' },
   { code: 'B01',  label: 'Biomass' },
+  { code: 'IMP',  label: 'Commercial Import (all partners)' },
+  { code: 'EXP',  label: 'Commercial Export (all partners)' },
 ];
 const WIND_COMPONENTS = ['B18', 'B19'];
 
