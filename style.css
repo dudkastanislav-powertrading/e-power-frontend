@@ -686,6 +686,14 @@ button { font: inherit; cursor: pointer; }
 .sp-stat-row .val { font-weight: 700; font-feature-settings: "tnum"; }
 .sp-stat-row.net .val { color: #f5a623; }
 .sp-stat-row .val.muted { color: #cdd2da; font-weight: 500; }
+.sp-substat {
+  font-size: 11px;
+  color: #8a8f99;
+  padding: 2px 0 6px;
+  margin-top: -2px;
+  border-bottom: 1px dashed #eef0f4;
+  font-feature-settings: "tnum";
+}
 
 .spreads-analysis {
   background: #fafbfc;

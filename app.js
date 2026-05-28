@@ -1578,7 +1578,7 @@ state.spreads = {
   zoneB: 'RO',
   spreadType: 'effective',     // effective | full
   svs: 'include',              // include | exclude (only matters for stats; bars stay raw)
-  direction: 'a2b',            // a2b | b2a | sym
+  direction: 'a2b',            // a2b | b2a  (sym removed 2026-05-28)
   dayDate: null,
   monthYM: null,               // 'YYYY-MM'
   yearY: null,                 // number
@@ -1667,13 +1667,23 @@ function initSpreadsDefaults() {
 }
 
 function bindSpreadsControls() {
+  // When the user picks a different pair, reset direction to a2b so the
+  // toolbar isn't stuck on a stale b2a setting from the previous pair.
+  function resetDirToA2B() {
+    state.spreads.direction = 'a2b';
+    document.querySelectorAll('[data-sp-dir]').forEach(b => {
+      b.classList.toggle('active', b.dataset.spDir === 'a2b');
+    });
+  }
   document.getElementById('sp-zone-a').addEventListener('change', async (e) => {
     state.spreads.zoneA = e.target.value;
+    resetDirToA2B();
     await ensureNeededYearsLoaded();
     renderSpreads();
   });
   document.getElementById('sp-zone-b').addEventListener('change', async (e) => {
     state.spreads.zoneB = e.target.value;
+    resetDirToA2B();
     await ensureNeededYearsLoaded();
     renderSpreads();
   });
@@ -1830,14 +1840,8 @@ function applySpreadMode(rawArr) {
   const { direction, spreadType } = state.spreads;
   return rawArr.map(v => {
     if (v == null) return null;
-    let signed;
-    if (direction === 'a2b') signed = v;
-    else if (direction === 'b2a') signed = -v;
-    else signed = Math.abs(v);             // sym
-    if (spreadType === 'effective') {
-      // In sym mode |v| is already non-negative; effective = same.
-      return Math.max(0, signed);
-    }
+    const signed = (direction === 'a2b') ? v : -v;
+    if (spreadType === 'effective') return Math.max(0, signed);
     return signed;
   });
 }
@@ -1883,15 +1887,12 @@ function isoDatesOfYear(y) {
 // Returns { base, effective, count, hoursPositive, totalHours }
 function aggregateStats(rawArrays) {
   let sumSigned = 0, sumEffective = 0, count = 0, positive = 0;
+  const dir = state.spreads.direction;
   for (const arr of rawArrays || []) {
     if (!arr) continue;
     for (const v of arr) {
       if (v == null) continue;
-      // Apply direction transform
-      let signed;
-      if (state.spreads.direction === 'a2b') signed = v;
-      else if (state.spreads.direction === 'b2a') signed = -v;
-      else signed = Math.abs(v);
+      const signed = (dir === 'a2b') ? v : -v;
       sumSigned += signed;
       sumEffective += Math.max(0, signed);
       if (signed > 0) positive++;
@@ -1915,7 +1916,6 @@ function aggregateStats(rawArrays) {
 //
 // direction = 'a2b' → use border-dir A→B
 // direction = 'b2a' → use border-dir B→A
-// direction = 'sym' → avg over both available directions
 function _borderKey(zoneA, zoneB) {
   return [zoneA, zoneB].sort().join('-');
 }
@@ -1923,9 +1923,7 @@ function _wantDirsFor(zoneA, zoneB) {
   const sp = state.spreads;
   const dirAB = `${zoneA}>${zoneB}`;
   const dirBA = `${zoneB}>${zoneA}`;
-  if (sp.direction === 'a2b') return [dirAB];
-  if (sp.direction === 'b2a') return [dirBA];
-  return [dirAB, dirBA];
+  return sp.direction === 'a2b' ? [dirAB] : [dirBA];
 }
 
 // Hourly marginal price for a single date — returns 24-element array
@@ -1946,6 +1944,122 @@ function hourlyMarginalForDate(zoneA, zoneB, isoDate) {
   // If literally every hour is null, return null so callers can skip overlay.
   if (out.every(v => v == null)) return null;
   return out;
+}
+
+// ----- Hourly ATC (offered_mw) helpers -------------------------------
+// Cross-border auction "available transmission capacity" per hour, used
+// to grey-out bars when no physical flow was possible. atc lives on the
+// same border_hourly row as marginal/spread (schema_version 2+).
+//
+// Coverage model:
+//   - hasJaoCoverage(A,B): true if there is any borderHourly row for the
+//     selected direction(s). False ⇒ non-JAO border (e.g. PL↔DE-LU SDAC) ⇒
+//     no atc constraint applies, treat every hour as "flowable".
+//   - For JAO-covered borders, an hour is "blocked" if atc IS NULL or
+//     atc < 1 MW (round-off tolerance). Otherwise "flowable".
+function hasJaoCoverage(zoneA, zoneB) {
+  if (!state.borderHourly) return false;
+  const b = _borderKey(zoneA, zoneB);
+  const wantDirs = _wantDirsFor(zoneA, zoneB);
+  for (const dir of wantDirs) {
+    if (state.borderHourly.byPair.has(`${b}|${dir}`)) return true;
+  }
+  return false;
+}
+
+// Returns 24-element array of atc values (MW). null = no JAO row for that
+// hour. Returns null entirely if border is not JAO-covered at all (so
+// callers can skip greying logic uniformly).
+function hourlyAtcForDate(zoneA, zoneB, isoDate) {
+  if (!state.borderHourly) return null;
+  if (!hasJaoCoverage(zoneA, zoneB)) return null;
+  const b = _borderKey(zoneA, zoneB);
+  const wantDirs = _wantDirsFor(zoneA, zoneB);
+  const out = new Array(24).fill(null);
+  for (let h = 1; h <= 24; h++) {
+    // We average atc across selected directions — matches how marginal is
+    // resolved. With sym gone there's always exactly one direction so this
+    // is effectively a single lookup.
+    let sum = 0, n = 0;
+    for (const dir of wantDirs) {
+      const row = state.borderHourly.idx.get(`${b}|${dir}|${isoDate}|${h}`);
+      if (row && row.atc != null) { sum += row.atc; n++; }
+    }
+    out[h - 1] = n > 0 ? sum / n : null;
+  }
+  return out;
+}
+
+// 24h profile of atc averaged over a list of dates (for Month/Year hourly
+// charts). Returns null if border has no JAO coverage. Per hour: averaged
+// across days where atc is non-null; days with null are skipped, not
+// counted as 0. If every entry is null the function still returns the
+// array (so the chart can render — every hour just won't be greyed).
+function avgHourlyAtcForDates(zoneA, zoneB, isoDates) {
+  if (!hasJaoCoverage(zoneA, zoneB)) return null;
+  const sums = new Array(24).fill(0);
+  const cnts = new Array(24).fill(0);
+  for (const d of isoDates) {
+    const arr = hourlyAtcForDate(zoneA, zoneB, d);
+    if (!arr) continue;
+    for (let h = 0; h < 24; h++) {
+      if (arr[h] != null) { sums[h] += arr[h]; cnts[h]++; }
+    }
+  }
+  return sums.map((s, h) => cnts[h] > 0 ? s / cnts[h] : null);
+}
+
+// ATC stats over a period — used for the "Lost potential" summary row.
+//
+// Returns {
+//   covered:        bool,                  // border is JAO-covered
+//   theoreticalAvg: number|null,           // AVG(signed spread) over ALL hours
+//   effectiveAvg:   number|null,           // AVG(signed spread) over flowable hours
+//   lostAvg:        number|null,           // theoretical − effective (€/MWh)
+//   blockedHours:   int,                   // count of (atc<1 || atc null) hours
+//   blockedAbsSum:  number,                // Σ |signed spread| over blocked hours
+//   totalHours:     int,                   // hours with any spread data
+// }
+//
+// For non-JAO borders (covered=false), theoretical == effective and
+// blockedHours = 0. Callers display "n/a — no ATC data" in that case.
+function atcAwareStats(zoneA, zoneB, isoDates) {
+  const dir = state.spreads.direction;
+  const covered = hasJaoCoverage(zoneA, zoneB);
+  let sumAll = 0, cntAll = 0;
+  let sumEff = 0, cntEff = 0;
+  let blockedHours = 0, blockedAbsSum = 0;
+  for (const d of isoDates) {
+    const raw = pairHoursForDate(zoneA, zoneB, d);
+    if (!raw) continue;
+    const atcArr = covered ? hourlyAtcForDate(zoneA, zoneB, d) : null;
+    for (let h = 0; h < raw.length && h < 24; h++) {
+      const v = raw[h];
+      if (v == null) continue;
+      const signed = (dir === 'a2b') ? v : -v;
+      sumAll += signed; cntAll++;
+      const atc = atcArr ? atcArr[h] : null;
+      // Non-covered borders: every hour is flowable. Covered borders:
+      // flowable ⇔ atc != null && atc >= 1.
+      const flowable = !covered || (atc != null && atc >= 1);
+      if (flowable) { sumEff += signed; cntEff++; }
+      else { blockedHours++; blockedAbsSum += Math.abs(signed); }
+    }
+  }
+  const theoreticalAvg = cntAll > 0 ? sumAll / cntAll : null;
+  const effectiveAvg   = cntEff > 0 ? sumEff / cntEff : null;
+  const lostAvg = (theoreticalAvg != null && effectiveAvg != null)
+                  ? theoreticalAvg - effectiveAvg
+                  : null;
+  return {
+    covered,
+    theoreticalAvg,
+    effectiveAvg,
+    lostAvg,
+    blockedHours,
+    blockedAbsSum,
+    totalHours: cntAll,
+  };
 }
 
 // 24-hour profile of the marginal price averaged over a list of dates.
@@ -1971,24 +2085,14 @@ function avgHourlyMarginalForDates(zoneA, zoneB, isoDates) {
 // energylive convention).
 function jaoMpForPeriod(zoneA, zoneB, isoDates) {
   if (!state.borders) return null;
-  // Find direction key matching A→B / B→A based on our direction setting
-  const sp = state.spreads;
-  // Look up borders for both possible orientations and pick the one we have.
   // Border code in JAO is alpha-sorted (e.g. "HU-RO"); direction is "HU>RO".
-  const dirAB = `${zoneA}>${zoneB}`;
-  const dirBA = `${zoneB}>${zoneA}`;
+  const sp = state.spreads;
   const b1 = [zoneA, zoneB].sort().join('-');
-  const wantDirs = [];
-  if (sp.direction === 'a2b') wantDirs.push(dirAB);
-  else if (sp.direction === 'b2a') wantDirs.push(dirBA);
-  else wantDirs.push(dirAB, dirBA);
-
+  const wantDir = sp.direction === 'a2b' ? `${zoneA}>${zoneB}` : `${zoneB}>${zoneA}`;
   let sum = 0, n = 0;
   for (const d of isoDates) {
-    for (const dir of wantDirs) {
-      const row = state.borders.get(`${b1}|${dir}|${d}`);
-      if (row && row.mb != null) { sum += row.mb; n++; }
-    }
+    const row = state.borders.get(`${b1}|${wantDir}|${d}`);
+    if (row && row.mb != null) { sum += row.mb; n++; }
   }
   return n > 0 ? sum / n : null;
 }
@@ -2010,9 +2114,7 @@ function renderSpreads() {
 
 function pairLabel() {
   const { zoneA, zoneB, direction } = state.spreads;
-  if (direction === 'a2b') return `${zoneA} → ${zoneB}`;
-  if (direction === 'b2a') return `${zoneB} → ${zoneA}`;
-  return `${zoneA} ↔ ${zoneB}`;
+  return direction === 'a2b' ? `${zoneA} → ${zoneB}` : `${zoneB} → ${zoneA}`;
 }
 
 function sectionTitle(prefix, periodLabel) {
@@ -2030,14 +2132,17 @@ function renderSpDay() {
   const raw = pairHoursForDate(zoneA, zoneB, dayDate);
   const displayArr = applySpreadMode(raw);
   const mpArr = hourlyMarginalForDate(zoneA, zoneB, dayDate);
+  const atcArr = hourlyAtcForDate(zoneA, zoneB, dayDate);
   drawHourBars('sp-day-chart', displayArr, {
     ctx: `${pairLabel()} · ${dayDate}`,
     lineArr: mpArr,
+    atcArr,
   });
 
   const stats = aggregateStats(raw ? [raw] : []);
   const mp = jaoMpForPeriod(zoneA, zoneB, [dayDate]);
-  fillSideStats('sp-day-stats', `Day ${dayDate}`, stats, mp);
+  const atcStats = atcAwareStats(zoneA, zoneB, [dayDate]);
+  fillSideStats('sp-day-stats', `Day ${dayDate}`, stats, mp, atcStats);
 }
 
 // ----- Month section ----------------------------------------
@@ -2063,14 +2168,17 @@ function renderSpMonth() {
   const displayed = dayArrays.map(applySpreadMode);
   const profile = avgProfile(displayed);
   const mpProfile = avgHourlyMarginalForDates(zoneA, zoneB, days);
+  const atcProfile = avgHourlyAtcForDates(zoneA, zoneB, days);
   drawHourBars('sp-month-hourly', profile, {
     ctx: `${pairLabel()} · ${monthYM} · 24h avg`,
     lineArr: mpProfile,
+    atcArr: atcProfile,
   });
 
   const stats = aggregateStats(dayArrays);
   const mp = jaoMpForPeriod(zoneA, zoneB, days);
-  fillSideStats('sp-month-stats', `Month ${monthYM}`, stats, mp);
+  const atcStats = atcAwareStats(zoneA, zoneB, days);
+  fillSideStats('sp-month-stats', `Month ${monthYM}`, stats, mp, atcStats);
 }
 
 // ----- Year section -----------------------------------------
@@ -2107,14 +2215,17 @@ function renderSpYear() {
   const displayed = dayArrays.map(applySpreadMode);
   const profile = avgProfile(displayed);
   const mpProfile = avgHourlyMarginalForDates(zoneA, zoneB, datesEff);
+  const atcProfile = avgHourlyAtcForDates(zoneA, zoneB, datesEff);
   drawHourBars('sp-year-hourly', profile, {
     ctx: `${pairLabel()} · ${yearY} · 24h avg`,
     lineArr: mpProfile,
+    atcArr: atcProfile,
   });
 
   const stats = aggregateStats(dayArrays);
   const mp = jaoMpForPeriod(zoneA, zoneB, datesEff);
-  fillSideStats('sp-year-stats', `Year ${yearY}`, stats, mp);
+  const atcStats = atcAwareStats(zoneA, zoneB, datesEff);
+  fillSideStats('sp-year-stats', `Year ${yearY}`, stats, mp, atcStats);
 }
 
 // ----- Earnings ---------------------------------------------
@@ -2136,21 +2247,15 @@ function computeEarnings(zoneA, zoneB, isoDates) {
 
   // Cache daily mp lookups so we don't hit state.borders 24x per day
   const dailyMp = new Map();   // d → mp value or null
+  const b1 = [zoneA, zoneB].sort().join('-');
+  const dirAB = `${zoneA}>${zoneB}`;
+  const dirBA = `${zoneB}>${zoneA}`;
+  const wantDir = direction === 'a2b' ? dirAB : dirBA;
   function getDailyMp(d) {
     if (dailyMp.has(d)) return dailyMp.get(d);
     if (!state.borders) { dailyMp.set(d, null); return null; }
-    const b1 = [zoneA, zoneB].sort().join('-');
-    const dirAB = `${zoneA}>${zoneB}`;
-    const dirBA = `${zoneB}>${zoneA}`;
-    const wantDirs = direction === 'a2b' ? [dirAB]
-                    : direction === 'b2a' ? [dirBA]
-                    : [dirAB, dirBA];
-    let sum = 0, n = 0;
-    for (const dir of wantDirs) {
-      const row = state.borders.get(`${b1}|${dir}|${d}`);
-      if (row && row.mb != null) { sum += row.mb; n++; }
-    }
-    const val = n > 0 ? sum / n : null;
+    const row = state.borders.get(`${b1}|${wantDir}|${d}`);
+    const val = (row && row.mb != null) ? row.mb : null;
     dailyMp.set(d, val);
     return val;
   }
@@ -2165,11 +2270,7 @@ function computeEarnings(zoneA, zoneB, isoDates) {
     for (const v of raw) {
       if (v == null) continue;
       totalHours++;
-      // Apply direction
-      let signed;
-      if (direction === 'a2b') signed = v;
-      else if (direction === 'b2a') signed = -v;
-      else signed = Math.abs(v);
+      const signed = (direction === 'a2b') ? v : -v;
       if (signed > 0) {
         revenue += signed;
         if (mp != null) cost += mp;
@@ -2324,15 +2425,47 @@ function renderSpAnalysis() {
 }
 
 // ----- Side-stats panel -------------------------------------
-function fillSideStats(elId, periodLabel, stats, mp) {
+// `atcStats` is the result of atcAwareStats() and feeds the Theoretical /
+// Effective / Lost-potential rows. Passing null preserves backward-compat
+// (rows just won't render).
+function fillSideStats(elId, periodLabel, stats, mp, atcStats) {
   const { svs } = state.spreads;
   const fmtV = v => v == null ? '<span class="val muted">—</span>'
                               : `<span class="val">${v.toFixed(2)} €</span>`;
   const netAvg = (stats.effective != null && mp != null && svs === 'include')
     ? stats.effective - mp
     : (stats.effective != null ? stats.effective : null);
+
+  // ----- Theoretical / Effective (ATC>0) / Lost potential ---------------
+  // These three rows replace the rough "Base/Effective avg" intuition with
+  // a flow-aware view: how much €/MWh would you give up if you could only
+  // trade when transmission was actually available.
+  let atcBlock = '';
+  if (atcStats) {
+    if (!atcStats.covered) {
+      atcBlock = `
+        <div class="sp-stat-row"><span class="lbl">Theoretical spread</span>${fmtV(atcStats.theoreticalAvg)}</div>
+        <div class="sp-stat-row"><span class="lbl">Effective spread (ATC&gt;0)</span><span class="val muted">n/a — no ATC data</span></div>
+        <div class="sp-stat-row"><span class="lbl">Lost potential</span><span class="val muted">0.00 €</span></div>
+      `;
+    } else {
+      // Subline shows blocked-hour count + Σ|spread| equivalence
+      const blk = atcStats.blockedHours;
+      const blkSub = blk > 0
+        ? `<div class="sp-substat">${blk} h blocked · Σ|spread| = ${atcStats.blockedAbsSum.toFixed(0)} €/MWh-equiv</div>`
+        : '';
+      atcBlock = `
+        <div class="sp-stat-row"><span class="lbl">Theoretical spread</span>${fmtV(atcStats.theoreticalAvg)}</div>
+        <div class="sp-stat-row"><span class="lbl">Effective spread (ATC&gt;0)</span>${fmtV(atcStats.effectiveAvg)}</div>
+        <div class="sp-stat-row"><span class="lbl">Lost potential</span>${fmtV(atcStats.lostAvg)}</div>
+        ${blkSub}
+      `;
+    }
+  }
+
   const html = `
     <h4>${escapeHtml(periodLabel)}</h4>
+    ${atcBlock}
     <div class="sp-stat-row"><span class="lbl">Base spread</span>${fmtV(stats.base)}</div>
     <div class="sp-stat-row"><span class="lbl">Effective avg</span>${fmtV(stats.effective)}</div>
     <div class="sp-stat-row"><span class="lbl">CBC (JAO mp)</span>${fmtV(mp)}</div>
@@ -2361,6 +2494,12 @@ function spChartDims(svg, fallbackH) {
 }
 
 // Each drawer wires a tooltip callback that formats the bar context.
+//
+// opts.atcArr (optional, length matching arr): hourly ATC values in MW.
+//   - null entry on a JAO-covered border ⇒ bar greyed (treated as 0)
+//   - numeric < 1                          ⇒ bar greyed (no flow possible)
+//   - numeric >= 1                         ⇒ bar coloured green/red as usual
+//   - omit the array entirely on non-JAO borders ⇒ no greying applied
 function drawHourBars(svgId, arr, opts) {
   const svg = d3.select(`#${svgId}`);
   svg.selectAll('*').remove();
@@ -2369,6 +2508,7 @@ function drawHourBars(svgId, arr, opts) {
   // for the second y-axis labels.
   const lineArr = opts && opts.lineArr;
   const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
+  const atcArr = (opts && Array.isArray(opts.atcArr)) ? opts.atcArr : null;
   const padL = 42, padR = hasLine ? 48 : 10, padT = 14, padB = 28;
   if (!arr) {
     svg.append('text')
@@ -2378,6 +2518,14 @@ function drawHourBars(svgId, arr, opts) {
     return;
   }
   const ctx = (opts && opts.ctx) || '';
+  // A bar is "blocked" (grey) when an ATC array is provided AND the
+  // entry is either missing or < 1 MW. Without an array (non-JAO border),
+  // no bars are greyed.
+  const isBlocked = (i) => {
+    if (!atcArr) return false;
+    const a = atcArr[i];
+    return (a == null || a < 1);
+  };
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
     xLabel: i => String(i + 1),
@@ -2385,6 +2533,9 @@ function drawHourBars(svgId, arr, opts) {
     lineArr: hasLine ? lineArr : null,
     lineLabel: 'JAO marginal €/MW',
     lineColor: '#f97316',
+    barColorFor: (i, v) => isBlocked(i)
+        ? '#D1D5DB'                            // light grey — no flow
+        : (v >= 0 ? '#3aa775' : '#d8463a'),
     tooltipFor: (i, v) => {
       const hour = i + 1;
       const valTxt = v == null ? '<span class="lbl">no data</span>'
@@ -2392,14 +2543,32 @@ function drawHourBars(svgId, arr, opts) {
       let mpRow = '';
       if (hasLine) {
         const mv = lineArr[i];
+        // On blocked hours the marginal price is still the auction
+        // clearing price (capacity offered was 0 → typically 0 €/MW,
+        // but JAO may still publish a value). We surface that with a
+        // small caveat so the user doesn't misread it as live trade.
         const mpTxt = mv == null ? '<span class="lbl">no data</span>'
                                   : `<strong>${mv.toFixed(2)} €/MW</strong>`;
-        mpRow = `<div class="row"><span class="lbl">JAO marginal</span>${mpTxt}</div>`;
+        const mpNote = (atcArr && isBlocked(i) && mv != null)
+            ? ' <span class="lbl">(no capacity offered)</span>' : '';
+        mpRow = `<div class="row"><span class="lbl">JAO marginal</span>${mpTxt}${mpNote}</div>`;
+      }
+      let atcRow = '';
+      if (atcArr) {
+        const a = atcArr[i];
+        if (a == null) {
+          atcRow = `<div class="row"><span class="lbl">ATC</span><span class="lbl">no data (treated as 0)</span></div>`;
+        } else if (a < 1) {
+          atcRow = `<div class="row"><span class="lbl">ATC</span><strong>0 MW</strong> <span class="lbl">(no flow possible)</span></div>`;
+        } else {
+          atcRow = `<div class="row"><span class="lbl">ATC</span><strong>${a.toFixed(0)} MW</strong></div>`;
+        }
       }
       return `
         <div class="ttl">${ctx || 'Hour'}</div>
         <div class="row"><span class="lbl">CET hour</span><span>${hour}</span></div>
         <div class="row"><span class="lbl">Spread</span>${valTxt}</div>
+        ${atcRow}
         ${mpRow}`;
     },
   });
@@ -2556,13 +2725,18 @@ function drawBarsAxis(svg, arr, opts) {
   }
 
   // Bars — drawn with d3 transition for a smooth grow-from-zero entry.
+  // `barColorFor(i, v)` lets callers override the default green/red logic
+  // (used to grey-out hours where transmission capacity is zero).
+  const barColorFor = opts.barColorFor;
   for (let i = 0; i < n; i++) {
     const v = arr[i];
     if (v == null) continue;
     const x = padL + step * i + (step - barW) / 2;
     const yFinal = v >= 0 ? yScale(v) : zeroY;
     const hFinal = Math.abs(yScale(v) - zeroY);
-    const color = v >= 0 ? '#3aa775' : '#d8463a';
+    const color = barColorFor
+        ? barColorFor(i, v)
+        : (v >= 0 ? '#3aa775' : '#d8463a');
 
     const bar = svg.append('rect')
       .attr('class', 'bar')

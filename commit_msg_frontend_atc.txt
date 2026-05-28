@@ -1,0 +1,31 @@
+spreads: surface ATC (offered_mw) — grey blocked bars + Lost potential metric
+
+Backend (untracked edit in e-power-platform/tools/snapshot_export.py):
+- Q_BORDER_HOURLY: select offered_mw from marts.jao_da_daily as 'atc'
+- border_hourly.json schema_version bumped to 2 (atc field added)
+- manifest's border_hourly.fields = [d,h,spread,marginal,atc]
+
+Frontend MARKET SPREADS:
+
+A. Removed Symmetric direction toggle — A→B / B→A only. Direction now
+   auto-resets to a2b when the pair changes. applySpreadMode /
+   aggregateStats / _wantDirsFor / jaoMpForPeriod / computeEarnings
+   simplified accordingly.
+
+B. Grey-bar coloring on the hourly chart for ATC=0 hours:
+   - new helpers hourlyAtcForDate / avgHourlyAtcForDates / hasJaoCoverage
+   - drawHourBars / drawBarsAxis accept atcArr + barColorFor callback
+   - bar #D1D5DB when atc<1 OR atc IS NULL on a JAO-covered border
+   - non-JAO borders (SDAC, e.g. PL↔DE-LU) skip greying entirely
+   - tooltip extended: 'ATC: 0 MW (no flow possible)' or 'ATC: X MW'
+   - JAO marginal-price line stays continuous through grey hours;
+     tooltip adds '(no capacity offered)' caveat on blocked points
+
+C. Side-stats panel: Theoretical / Effective (ATC>0) / Lost potential
+   rows on Day, Month, Year views. New atcAwareStats(zoneA,zoneB,dates)
+   returns {theoreticalAvg, effectiveAvg, lostAvg, blockedHours,
+   blockedAbsSum}. Subline reports '<N> h blocked · Σ|spread| = X
+   €/MWh-equiv' when N>0. Non-JAO borders display 'n/a — no ATC data',
+   Lost = 0.00 €.
+
+D. Cache-buster: app.js?v=24 → v=25.
