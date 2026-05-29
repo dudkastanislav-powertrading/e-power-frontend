@@ -150,6 +150,11 @@ const ARROW_METRIC = 'marginal';
 document.addEventListener('DOMContentLoaded', async () => {
   setBuildId();
   bindUI();
+  // Render the per-tab "Довідник показників" reference blocks. These are
+  // static content (no data dependency) — we render once at startup and
+  // they sit collapsed inside each tab until the user opens them.
+  // See feedback_site_definitions_at_bottom.md for the standing rule.
+  try { renderAllDefinitions(); } catch (e) { console.warn('definitions render failed:', e); }
   document.getElementById('last-updated').textContent = 'loading…';
   try {
     await loadRealData();
@@ -5059,4 +5064,412 @@ function drawPdYearlyChart(svgId, legendId, points, regression, currentYear) {
     `<span><span class="pd-sw" style="background:#378ADD;"></span>Annual avg</span>` +
     `<span><span class="pd-sw" style="background:#2c3340;border-top:1px dashed #2c3340;background:none;"></span>OLS trend</span>` +
     (regression && regression.r2 != null ? `<span style="color:#8a93a0;">R² = ${regression.r2.toFixed(2)}</span>` : '');
+}
+
+// =============================================================
+// =============================================================
+// DEFINITIONS / "Довідник показників" reference blocks per tab
+//
+// Permanent rule (see feedback_site_definitions_at_bottom.md in
+// e-power-platform): every tab must carry a collapsible block at the
+// bottom that explains every visible metric in plain Ukrainian for a
+// junior trader — name, plain description, formula in human form,
+// units, period + timezone, source + cadence. When a new metric is
+// added anywhere on a tab, append an entry here in the SAME commit.
+//
+// Tone: friendly, trader-oriented, NO academic jargon ("stochastic
+// dominance", "ratio-of-means" → strip out).
+// =============================================================
+// =============================================================
+
+// One row per metric. The structure deliberately mirrors the YAML
+// `fields:` blocks shipped in the JSON snapshots so the two stay
+// easy to align by eye.
+const DEFINITIONS = {
+  // ---------- Day-Ahead Map tab --------------------------------
+  map: [
+    {
+      name: 'Baseload',
+      desc: 'Середня ціна DAM по всіх 24 годинах доби. Базовий орієнтир — "скільки коштує MWh у середньому за добу".',
+      formula: 'Σ (Price_h, h=1..24) ÷ 24',
+      unit: '€/MWh',
+      period: 'CET 1..24, на одну добу',
+      source: 'ENTSO-E / OREE / ICE → curated.dam_price · оновлюється о ~13:00 CET у день D−1',
+    },
+    {
+      name: 'Peak load (Peak)',
+      desc: 'Середня ціна для денних годин — стандарт EU/EPEX. Це «рівень робочого часу».',
+      formula: 'AVG(Price_h) для h ∈ [9..20] CET — 12 годин',
+      unit: '€/MWh',
+      period: 'CET 9..20, на одну добу',
+      source: 'те саме що Baseload',
+    },
+    {
+      name: 'Off-Peak',
+      desc: 'Середня ціна для нічних і вечірніх годин — стандарт EU/EPEX.',
+      formula: 'AVG(Price_h) для h ∈ [1..8] ∪ [21..24] CET — 12 годин',
+      unit: '€/MWh',
+      period: 'CET 1..8 + 21..24, на одну добу',
+      source: 'те саме що Baseload',
+    },
+    {
+      name: 'TB2',
+      desc: 'Потенціал 2-годинної батареї за добу: різниця між середньою з 2 послідовних найдорожчих годин і середньою з 2 найдешевших.',
+      formula: 'max( AVG(Price_h, Price_{h+1}) ) − min( AVG(Price_h, Price_{h+1}) )',
+      unit: '€/MWh',
+      period: 'CET 1..24, на одну добу',
+      source: 'curated.dam_price → marts.dam_price_daily (TB2/TB4 рахуються в SQL)',
+    },
+    {
+      name: 'TB4',
+      desc: 'Потенціал 4-годинної батареї за добу. Стандартна метрика для arbitrage potential BESS-4h.',
+      formula: 'max( AVG(Price_h..Price_{h+3}) ) − min( AVG(Price_h..Price_{h+3}) )',
+      unit: '€/MWh',
+      period: 'CET 1..24, на одну добу',
+      source: 'те саме що TB2',
+    },
+    {
+      name: 'TB4%',
+      desc: 'Потенціал 4h-батареї у відсотках до середньої ціни — «ширина дихання» ринку відносно рівня цін. Дозволяє порівнювати дорогі і дешеві ринки.',
+      formula: '(AVG(TB4) для періоду) ÷ (AVG(Baseload) для періоду) × 100',
+      unit: '%',
+      period: 'агрегація залежить від обраного вікна (Day / MTD / YTD)',
+      source: 'derived; обчислюється у фронтенді поверх dam_daily.json',
+    },
+    {
+      name: 'PV capture (Solar)',
+      desc: 'Ціна, яку реально отримав «середній» сонячний MWh за добу. Зважена за PV виробництвом (B16) година-по-годині.',
+      formula: 'Σ (Price_h × PV_h) ÷ Σ PV_h, за всіма годинами доби',
+      unit: '€/MWh',
+      period: 'CET 1..24, на одну добу',
+      source: 'curated.dam_price + curated.generation_actual (B16) · ENTSO-E A75',
+    },
+    {
+      name: 'Wind capture',
+      desc: 'Аналогічно для вітру (B18 offshore + B19 onshore).',
+      formula: 'Σ (Price_h × Wind_h) ÷ Σ Wind_h',
+      unit: '€/MWh',
+      period: 'CET 1..24, на одну добу',
+      source: 'curated.dam_price + curated.generation_actual (B18+B19)',
+    },
+    {
+      name: 'MTD (колонка)',
+      desc: 'Середнє значення обраного профілю (Baseload / Peak / Off-peak / TB2 / TB4 / PV / Wind) від 1-го числа поточного місяця до сьогодні.',
+      formula: 'AVG(profile_d) для d ∈ [1-й день місяця .. сьогодні]',
+      unit: '€/MWh або % (для TB4%)',
+      period: 'місяць-до-дати, CET',
+      source: 'dam_daily.json (rolling 5.5 років)',
+    },
+    {
+      name: 'YTD (колонка)',
+      desc: 'Те саме від 1 січня поточного року.',
+      formula: 'AVG(profile_d) для d ∈ [1 січня .. сьогодні]',
+      unit: '€/MWh або %',
+      period: 'рік-до-дати, CET',
+      source: 'dam_daily.json',
+    },
+    {
+      name: 'Sparkline (zone detail panel)',
+      desc: 'Мікро-графік за останні 30 днів вибраного профілю по зоні.',
+      formula: 'послідовність добових значень profile_d за останні 30 днів',
+      unit: '€/MWh',
+      period: 'останні 30 діб, CET',
+      source: 'dam_daily.json',
+    },
+  ],
+
+  // ---------- Market Spreads tab -------------------------------
+  spreads: [
+    {
+      name: 'Theoretical spread',
+      desc: 'Середній знаковий спред (B − A) по всіх годинах періоду, БЕЗ урахування того чи були ATC. Це «що б ми мали в ідеальному світі без обмежень потужності».',
+      formula: 'AVG(spread_h) — для всіх годин періоду',
+      unit: '€/MWh',
+      period: 'Day / Month / Year, CET',
+      source: 'marts.jao_da_daily (border_hourly.json)',
+    },
+    {
+      name: 'Effective spread (ATC>0)',
+      desc: 'Середній знаковий спред ТІЛЬКИ по годинах, де JAO виставив ≥ 1 MW потужності. Це «що ми реально могли заробити».',
+      formula: 'AVG(spread_h) — для годин, де ATC ≥ 1 MW',
+      unit: '€/MWh',
+      period: 'Day / Month / Year, CET',
+      source: 'те саме що Theoretical',
+    },
+    {
+      name: 'Lost potential',
+      desc: 'Скільки €/MWh втрачено на годинах коли потужності не було. Якщо великий — рахуй, що JAO зрізав значну частину альфи.',
+      formula: 'Theoretical spread − Effective spread',
+      unit: '€/MWh',
+      period: 'той самий що Theoretical/Effective',
+      source: 'derived (фронтенд)',
+    },
+    {
+      name: 'JAO marginal',
+      desc: 'Клірингова ціна аукціону JAO — скільки коштує 1 MW добової transmission rights для цього напрямку. Це твій CBC (cost of capacity).',
+      formula: 'auction clearing price per MW (як його опублікував JAO)',
+      unit: '€/MW',
+      period: 'погодинно, CET',
+      source: 'JAO Daily Auction · ~10:30 CET у день D−1',
+    },
+    {
+      name: 'ATC (Available Transfer Capacity)',
+      desc: 'Потужність, яку JAO виставив на аукціон у цьому напрямку у цій годині. 0 = передачі не було → бар на чарті сірий.',
+      formula: 'offered_mw з curated.cross_border_auction',
+      unit: 'MW',
+      period: 'погодинно, CET',
+      source: 'JAO Daily Auction · ~10:30 CET у день D−1',
+    },
+    {
+      name: 'Base spread (legacy)',
+      desc: 'Старий рядок — середній знаковий спред по всіх годинах (≈ Theoretical, але без atc-awareness). Залишений для backward-compat.',
+      formula: 'AVG(spread_h) усі години',
+      unit: '€/MWh',
+      period: 'Day / Month / Year',
+      source: 'border_hourly.json',
+    },
+    {
+      name: 'Effective avg (legacy)',
+      desc: 'Старий рядок — середнє з max(0, signed_spread). НЕ те саме що «Effective spread (ATC>0)»: тут «effective» = «прибуткові тільки години», а не «години де потужність була».',
+      formula: 'AVG( max(0, spread_h) )',
+      unit: '€/MWh',
+      period: 'Day / Month / Year',
+      source: 'border_hourly.json',
+    },
+    {
+      name: 'CBC (JAO mp)',
+      desc: 'Середній денний marginal price JAO для напрямку. Це твоя погодинна «оренда труби».',
+      formula: 'AVG(marginal_price_daily) по днях періоду',
+      unit: '€/MWh (трактуємо €/MW як еквівалентний на 1 MWh/h)',
+      period: 'Day / Month / Year',
+      source: 'borders.json (marts.jao_da_daily)',
+    },
+    {
+      name: 'Net spread',
+      desc: 'Скільки лишиться після оплати CBC. Якщо тогл «CBC: Include» — це Effective avg − CBC, інакше = Effective avg.',
+      formula: 'Effective avg − CBC',
+      unit: '€/MWh',
+      period: 'Day / Month / Year',
+      source: 'derived',
+    },
+    {
+      name: 'Best month earnings',
+      desc: 'Скільки б ти заробив у найкращому місяці поточного року, торгуючи 1 MWh у кожній позитивно-спредовій годині. CBC вираховується якщо тогл включений.',
+      formula: 'Σ spread_h (для додатних h) − Σ daily_mp (для тих самих днів)',
+      unit: 'EUR',
+      period: 'найкращий календарний місяць поточного року',
+      source: 'derived',
+    },
+    {
+      name: 'YTD earnings',
+      desc: 'Те саме від початку обраного року до сьогодні.',
+      formula: 'як Best month, але за весь YTD',
+      unit: 'EUR',
+      period: 'рік-до-дати',
+      source: 'derived',
+    },
+    {
+      name: '% positive hours',
+      desc: 'Частка годин у періоді з додатним знаковим спредом — «як часто напрямок взагалі цікавий».',
+      formula: 'count(spread > 0) ÷ total_hours × 100',
+      unit: '%',
+      period: 'Day / Month / Year',
+      source: 'border_hourly.json',
+    },
+    {
+      name: 'Best / Worst hour (CET)',
+      desc: 'Година доби з найвищим / найнижчим середнім спредом у вибраному річному вікні. Допомагає планувати трейдинг-вікно.',
+      formula: 'argmax / argmin AVG(spread_h) по годинах доби',
+      unit: 'h (CET) · значення €/MWh',
+      period: 'річне 24h profile',
+      source: 'derived',
+    },
+    {
+      name: 'Best day',
+      desc: 'Календарний день із найбільшою сумою позитивних спредів. «Найдорожча доба року».',
+      formula: 'argmax(Σ effective_spread_h за добу)',
+      unit: 'дата · значення €/MWh',
+      period: 'річне вікно',
+      source: 'derived',
+    },
+  ],
+
+  // ---------- Actual Generation tab ----------------------------
+  gen: [
+    {
+      name: 'Actual (solid line)',
+      desc: 'Реальна середньогодинна потужність обраного типу генерації у вибраній зоні. Це факт, не прогноз.',
+      formula: 'AVG(value_mw) по 15-хв / погодинних точках усередині години',
+      unit: 'MW',
+      period: 'погодинно, CET',
+      source: 'ENTSO-E Transparency · curated.generation_actual · оновлення кожні ~15 хв',
+    },
+    {
+      name: 'Historical mean (dashed line)',
+      desc: 'Сезонна базова лінія — як зазвичай виглядає ця година / день у попередніх роках. Поточний рік не включений, щоб не «топити» сам себе.',
+      formula: 'AVG(value_mw) за всі попередні роки в тому ж місяці-годині (для 24h-profile) або ±7-добове вікно DOY (для річної серії)',
+      unit: 'MW',
+      period: '5.5 років історії, exclude current year',
+      source: 'те саме, перерахунок при кожному snapshot',
+    },
+    {
+      name: 'P5–P95 corridor (shaded)',
+      desc: '5-й і 95-й перцентилі тих самих історичних вибірок — «нормальний коридор». Якщо Actual вилазить за нього — це аномалія.',
+      formula: 'percentile(value_mw, 5) і percentile(value_mw, 95) за тією ж вибіркою як Historical mean',
+      unit: 'MW',
+      period: 'як Historical mean',
+      source: 'gen_climatology.json',
+    },
+    {
+      name: 'Wind (dropdown)',
+      desc: 'Сума онсайт + офсайт вітру. Псевдо-тип на боці фронтенду.',
+      formula: 'B18 (Offshore) + B19 (Onshore)',
+      unit: 'MW',
+      period: 'погодинно',
+      source: 'ENTSO-E A75 (production type codes)',
+    },
+    {
+      name: 'Solar (dropdown)',
+      desc: 'Сонячна PV генерація (B16).',
+      formula: 'value_mw для production_type=B16',
+      unit: 'MW',
+      period: 'погодинно',
+      source: 'ENTSO-E A75',
+    },
+    {
+      name: 'Nuclear / Coal / Hydro / Gas (dropdown)',
+      desc: 'Окремі ENTSO-E production type коди: B14 Nuclear, B02 Lignite, B05 Hard Coal, B04 Fossil Gas, B10/B11/B12 Hydro variants, B01 Biomass.',
+      formula: 'value_mw для відповідного PSR коду',
+      unit: 'MW',
+      period: 'погодинно',
+      source: 'ENTSO-E A75',
+    },
+    {
+      name: 'IMP (Commercial Import)',
+      desc: 'Сумарний імпорт у зону по всіх сусідніх зонах за годину. ENTSO-E A09 commercial schedule, не фізичний потік.',
+      formula: 'Σ flow_mw з усіх from_zone у to_zone=Z',
+      unit: 'MW',
+      period: 'погодинно',
+      source: 'curated.commercial_exchange',
+    },
+    {
+      name: 'EXP (Commercial Export)',
+      desc: 'Аналогічно — сумарний експорт із зони.',
+      formula: 'Σ flow_mw з from_zone=Z у всі to_zone',
+      unit: 'MW',
+      period: 'погодинно',
+      source: 'curated.commercial_exchange',
+    },
+  ],
+
+  // ---------- Product Dynamics tab -----------------------------
+  dynamics: [
+    {
+      name: '% vs baseload (Peak / Off-peak / PV / Wind)',
+      desc: 'Наскільки продукт відрізняється від базового рівня у відсотках. Додатне = продукт дорожче за baseload, від’ємне = дешевше.',
+      formula: '(Product − Baseload) ÷ Baseload × 100',
+      unit: '%',
+      period: 'Monthly / Quarterly / Yearly · CET',
+      source: 'dam_daily.json',
+    },
+    {
+      name: 'TB2 / TB4 у % від baseload',
+      desc: 'Спред-продукти діляться без віднімання — це сам собою спред, а не різниця рівнів.',
+      formula: 'TB ÷ Baseload × 100',
+      unit: '%',
+      period: 'Monthly / Quarterly / Yearly',
+      source: 'dam_daily.json',
+    },
+    {
+      name: 'EUR/MWh (тогл)',
+      desc: 'Сирі значення у €/MWh — без перерахунку у відсотки. Корисно щоб бачити абсолютні рівні.',
+      formula: 'AVG(product_d) у вибраному вікні',
+      unit: '€/MWh',
+      period: 'Monthly / Quarterly / Yearly',
+      source: 'dam_daily.json',
+    },
+    {
+      name: 'OLS trend (yearly chart)',
+      desc: 'Лінійний тренд по річних значеннях — звичайний метод найменших квадратів. Стрілка показує напрямок, R² — наскільки добре лінія описує дані.',
+      formula: 'y = a + b·x, де x = рік, y = річне середнє',
+      unit: 'нахил у %/рік або €/MWh/рік',
+      period: '5+ річних точок',
+      source: 'derived',
+    },
+    {
+      name: 'R² (coefficient of determination)',
+      desc: 'Наскільки тренд «правда». 1.0 = ідеальна лінія, 0 = шум.',
+      formula: 'classic R² для OLS регресії',
+      unit: 'безрозмірний 0..1',
+      period: 'як OLS trend',
+      source: 'derived',
+    },
+    {
+      name: 'Trend tag (strong / moderate / no clear)',
+      desc: 'Швидкий ярлик: strong при R² ≥ 0.70, moderate при 0.40 ≤ R² < 0.70, no clear trend при R² < 0.40 або занадто слабкому нахилі.',
+      formula: 'за R² порогами',
+      unit: 'текст',
+      period: 'як OLS trend',
+      source: 'derived',
+    },
+    {
+      name: 'Поточний рік (амбер highlight)',
+      desc: 'Жовтим виділено клітинку поточного року — дані ще неповні (часткове YTD). Не порівнюй наївно з минулими роками.',
+      formula: 'позначка, не розрахунок',
+      unit: '—',
+      period: 'поточний календарний рік',
+      source: 'derived',
+    },
+  ],
+
+  // ---------- Futures tab (placeholder) ------------------------
+  futures: [
+    {
+      name: 'Tab not yet active',
+      desc: 'Futures вкладка ще не реалізована — це тільки навігаційний хук. Коли з’явиться (EEX / ICE EUA / forward DA curves) — тут буде повний довідник.',
+      formula: 'TBD',
+      unit: '€/MWh за tenor',
+      period: 'TBD',
+      source: 'EEX Power Futures · ICE EUA · NYMEX TTF (план)',
+    },
+  ],
+};
+
+function _defItemHTML(it) {
+  return `
+    <div class="def-item">
+      <div class="def-name">${escapeHtml(it.name)}</div>
+      <div class="def-desc">${escapeHtml(it.desc)}</div>
+      <code class="def-formula">${escapeHtml(it.formula)}</code>
+      <div class="def-meta">
+        <span class="def-tag">${escapeHtml(it.unit)}</span>
+        <span class="def-tag">${escapeHtml(it.period)}</span>
+        <span class="def-tag def-src">${escapeHtml(it.source)}</span>
+      </div>
+    </div>`;
+}
+
+function renderDefinitionsInto(elId, tabKey) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const items = DEFINITIONS[tabKey] || [];
+  if (items.length === 0) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <details class="definitions-block">
+      <summary>Довідник показників</summary>
+      <div class="definitions-intro">
+        Шпаргалка для трейдера-початківця: що означає кожне число на цій вкладці,
+        у яких одиницях, за який період, і звідки воно взялось.
+      </div>
+      <div class="definitions-list">
+        ${items.map(_defItemHTML).join('')}
+      </div>
+    </details>`;
+}
+
+function renderAllDefinitions() {
+  renderDefinitionsInto('defs-map',      'map');
+  renderDefinitionsInto('defs-spreads',  'spreads');
+  renderDefinitionsInto('defs-gen',      'gen');
+  renderDefinitionsInto('defs-dynamics', 'dynamics');
 }

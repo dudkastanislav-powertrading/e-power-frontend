@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RedKlen — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=37" />
+  <link rel="stylesheet" href="style.css?v=38" />
 </head>
 <body>
   <header class="topbar">
@@ -140,6 +140,8 @@
         <span id="rows-count">— zones</span>
         <span class="data-source">data: ENTSO-E · NBU · ICE</span>
       </div>
+      <!-- Definitions / reference (populated by app.js → renderDefinitions) -->
+      <div class="definitions" id="defs-map"></div>
     </aside>
 
     <!-- =================================================== -->
@@ -257,6 +259,9 @@
         <span>Time zone: CET · Sources: local Postgres (curated.dam_price + marts.jao_da_daily)</span>
       </div>
 
+      <!-- Definitions / reference (populated by app.js → renderDefinitions) -->
+      <div class="definitions" id="defs-spreads"></div>
+
       <!-- Floating tooltip — positioned via JS while hovering chart bars -->
       <div class="sp-tooltip" id="sp-tooltip" aria-hidden="true"></div>
     </section>
@@ -361,6 +366,9 @@
         <span>Time zone: CET · Unit: MW (average power per hour) · Source: ENTSO-E Transparency / local Postgres</span>
       </div>
 
+      <!-- Definitions / reference (populated by app.js → renderDefinitions) -->
+      <div class="definitions" id="defs-gen"></div>
+
       <div class="sp-tooltip" id="gen-tooltip" aria-hidden="true"></div>
     </section>
 
@@ -446,6 +454,9 @@
         Current-year cell highlighted in amber; current-year data is partial.
       </div>
 
+      <!-- Definitions / reference (populated by app.js → renderDefinitions) -->
+      <div class="definitions" id="defs-dynamics"></div>
+
       <div class="sp-tooltip" id="pd-tooltip" aria-hidden="true"></div>
     </section>
   </main>
@@ -460,6 +471,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=37" type="module"></script>
+  <script src="app.js?v=38" type="module"></script>
 </body>
 </html>
