@@ -1,0 +1,45 @@
+site: per-tab "Довідник показників" reference blocks
+
+Implements the standing rule recorded in
+e-power-platform/feedback_site_definitions_at_bottom.md — every tab
+on the site carries a collapsible Definitions section at the bottom
+that explains every visible metric in plain Ukrainian for a junior
+trader: name, plain description, formula in human form (not SQL),
+units, period + timezone, source + cadence.
+
+Coverage of the initial inventory (also documented in the feedback
+file):
+
+  defs-map       (Day-Ahead Map tab)        11 metrics
+                   Baseload, Peak, Off-peak, TB2, TB4, TB4%,
+                   PV / Wind capture, MTD, YTD, sparkline.
+  defs-spreads   (Market Spreads tab)       14 metrics
+                   Theoretical / Effective / Lost potential,
+                   JAO marginal, ATC, Base / Effective avg / CBC /
+                   Net spread (legacy), Best month / YTD earnings,
+                   % positive, Best/Worst hour, Best day.
+  defs-gen       (Actual Generation tab)     8 metrics
+                   Actual, Historical mean, P5–P95 corridor,
+                   Wind / Solar / Nuclear-Coal-Hydro / IMP / EXP.
+  defs-dynamics  (Product Dynamics tab)      7 metrics
+                   % vs baseload, TB ÷ Baseload, EUR/MWh toggle,
+                   OLS trend, R², trend tag, current-year highlight.
+  defs-futures   placeholder until the tab ships.
+
+Implementation:
+
+* index.html: placeholder <div class="definitions" id="defs-…">
+  inside each tab section, populated by app.js at startup.
+* app.js: const DEFINITIONS map (per-tab arrays of metric objects),
+  _defItemHTML / renderDefinitionsInto / renderAllDefinitions, called
+  once from the DOMContentLoaded handler after bindUI().
+* style.css: .definitions / .definitions-block / .def-item / .def-name
+  / .def-desc / .def-formula / .def-meta / .def-tag — light grey,
+  closed by default, native <details>/<summary> chevron, single-column
+  on narrow .table-panel and below 720px.
+
+Cache busters: style.css?v=37→v=38, app.js?v=37→v=38.
+
+When a new metric is added anywhere on a tab, append the entry in
+the DEFINITIONS map in the same commit — see feedback file for the
+full rule.
