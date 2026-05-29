@@ -429,6 +429,7 @@ function bindUI() {
   document.querySelectorAll('#dam-table th').forEach(th => {
     th.addEventListener('click', () => {
       const k = th.dataset.sort;
+      if (!k) return;   // non-sortable columns (e.g. 30d sparkline)
       if (k === sortKey) sortDir = (sortDir === 'asc' ? 'desc' : 'asc');
       else { sortKey = k; sortDir = (k === 'zone' ? 'asc' : 'desc'); }
       window.__sort = { key: sortKey, dir: sortDir };
@@ -1172,6 +1173,9 @@ function renderTable() {
     zone: z.code,
     name: z.name,
     price: getZonePrice(z.code, state.mode, state.profile),
+    delta: selectedDeltaPct(z.code),
+    vsde:  benchSpread(z.code, 'DE-LU'),
+    vsit:  benchSpread(z.code, 'IT-NORD'),
     mtd:   getZonePriceMTD(z.code),
     ytd:   getZonePriceYTD(z.code),
     group: z.group,
@@ -1190,13 +1194,128 @@ function renderTable() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${escapeHtml(r.name)} <span class="zone-code" style="color:#8a93a0; font-size:11px;">(${r.zone})</span></td>
-      <td class="num">${fmtCell(r.price)}</td>
+      <td class="num">${fmtCell(r.price)}${deltaCellHTML(r.delta)}</td>
+      <td class="spark-cell">${tableSparkSVG(r.zone)}</td>
+      <td class="num">${benchCellHTML(r.vsde)}</td>
+      <td class="num">${benchCellHTML(r.vsit)}</td>
       <td class="num">${fmtCell(r.mtd)}</td>
       <td class="num">${fmtCell(r.ytd)}</td>
     `;
     tbody.appendChild(tr);
   }
   document.getElementById('rows-count').textContent = `${rows.length} zones`;
+}
+
+// =============================================================
+// Side-table enrichments (B1 trend + B2 benchmark spreads)
+// =============================================================
+
+// Δ% of the Selected value vs the immediately-preceding comparable period:
+//   day    → previous available calendar day
+//   mtd    → previous month, same day-of-month cap
+//   ytd    → previous year, same end month/day cap
+//   custom → the equal-length window ending the day before rangeFrom
+function selectedDeltaPct(zoneCode) {
+  const cur = getZonePrice(zoneCode, state.mode, state.profile);
+  if (cur == null) return null;
+  const series = state.data.get(zoneCode);
+  if (!series) return null;
+  const field = profileField(state.profile);
+  const today = parseISO(todayISO());
+  let prior = null;
+
+  if (state.mode === 'day') {
+    let best = null;
+    for (const r of series) {
+      if (r.date < state.date && (!best || r.date > best.date)) best = r;
+    }
+    if (best) {
+      prior = best[field] != null ? best[field]
+            : ((field === 'peak' || field === 'offpeak') ? best.mean : null);
+    }
+  } else if (state.mode === 'mtd') {
+    let y = state.year, m = state.monthIdx - 1;
+    if (m < 0) { m = 11; y--; }
+    const capDay = (state.year === today.getUTCFullYear() && state.monthIdx === today.getUTCMonth())
+      ? today.getUTCDate() : 31;
+    prior = periodAvgForZone(zoneCode, d =>
+      d.getUTCFullYear() === y && d.getUTCMonth() === m && d.getUTCDate() <= capDay);
+  } else if (state.mode === 'ytd') {
+    const y = state.year - 1;
+    let endM = 11, endD = 31;
+    if (!state.fullYear && state.year === today.getUTCFullYear()) {
+      endM = today.getUTCMonth(); endD = today.getUTCDate();
+    }
+    prior = periodAvgForZone(zoneCode, d =>
+      d.getUTCFullYear() === y &&
+      (d.getUTCMonth() < endM || (d.getUTCMonth() === endM && d.getUTCDate() <= endD)));
+  } else if (state.mode === 'custom') {
+    if (!state.rangeFrom || !state.rangeTo) return null;
+    const from = parseISO(state.rangeFrom), to = parseISO(state.rangeTo);
+    const span = Math.round((to - from) / 86400000) + 1;
+    const pTo = new Date(from); pTo.setUTCDate(pTo.getUTCDate() - 1);
+    const pFrom = new Date(pTo); pFrom.setUTCDate(pFrom.getUTCDate() - (span - 1));
+    const pFromISO = ymd(pFrom), pToISO = ymd(pTo);
+    prior = periodAvgForZone(zoneCode, d => { const s = ymd(d); return s >= pFromISO && s <= pToISO; });
+  }
+
+  if (prior == null || prior === 0) return null;
+  return (cur - prior) / Math.abs(prior) * 100;
+}
+
+// Average of a zone's profile field over rows matching a date predicate.
+function periodAvgForZone(zoneCode, predicate) {
+  const series = state.data.get(zoneCode);
+  if (!series) return null;
+  const slice = series.filter(r => predicate(parseISO(r.date)));
+  if (!slice.length) return null;
+  if (state.profile === 'pv' || state.profile === 'wind') return weightedCapturePrice(slice, state.profile);
+  return avgField(slice, profileField(state.profile));
+}
+
+// Signed spread of a zone vs a benchmark zone, same mode/profile. €/MWh.
+function benchSpread(zoneCode, benchCode) {
+  if (zoneCode === benchCode) return null;
+  const a = getZonePrice(zoneCode, state.mode, state.profile);
+  const b = getZonePrice(benchCode, state.mode, state.profile);
+  if (a == null || b == null) return null;
+  return a - b;
+}
+
+// Δ% rendered as a small colored line under the Selected price.
+function deltaCellHTML(v) {
+  if (v == null) return '';
+  const col = v > 0.3 ? '#b03030' : v < -0.3 ? '#2e7d32' : '#8a93a0';
+  const ar  = v > 0.3 ? '▲' : v < -0.3 ? '▼' : '·';
+  return `<div class="delta" style="font-size:11px;color:${col};line-height:1.2;">${ar}${Math.abs(v).toFixed(1)}%</div>`;
+}
+
+// Benchmark spread cell — signed, rounded to whole €/MWh, color-coded.
+function benchCellHTML(v) {
+  if (v == null) return '<span style="color:#cdd2da;">—</span>';
+  const col = v > 1 ? '#b03030' : v < -1 ? '#2e7d32' : '#8a93a0';
+  const s = v > 0 ? '+' : '';
+  return `<span style="color:${col};">${s}${Math.round(v)}</span>`;
+}
+
+// Compact 30-day sparkline for the side table. Uses the same daily-points
+// helper as the detail panel, restricted to a single zone. Color = direction.
+function tableSparkSVG(zoneCode) {
+  const field = profileField(state.profile);
+  const endISO = state.mode === 'day' ? state.date
+              : (state.mode === 'custom' && state.rangeTo ? state.rangeTo : todayISO());
+  const end = parseISO(endISO);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 29);
+  const pts = sparkDailyPoints([zoneCode], field, start, end)
+                .filter(p => p.value != null).map(p => p.value);
+  if (pts.length < 2) return '<span style="color:#cdd2da;">—</span>';
+  const w = 84, h = 20, mn = Math.min(...pts), mx = Math.max(...pts), r = Math.max(mx - mn, 1);
+  const sx = w / (pts.length - 1);
+  const d = pts.map((v, i) => `${(i * sx).toFixed(1)},${(h - ((v - mn) / r) * h).toFixed(1)}`).join(' ');
+  const up = pts[pts.length - 1] >= pts[0];
+  const col = up ? '#b03030' : '#2e7d32';
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;margin-left:auto;"><polyline points="${d}" fill="none" stroke="${col}" stroke-width="1.5"/></svg>`;
 }
 
 function fmtCell(v) {

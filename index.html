@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RedKlen — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=31" />
+  <link rel="stylesheet" href="style.css?v=32" />
 </head>
 <body>
   <header class="topbar">
@@ -125,7 +125,10 @@
           <thead>
             <tr>
               <th data-sort="zone">Zone ▾</th>
-              <th data-sort="price" class="num">Selected</th>
+              <th data-sort="price" class="num" title="Ціна обраного періоду/профілю + Δ vs попередній рівний період">Selected</th>
+              <th class="num" title="Тренд за останні 30 днів (колір лінії = напрямок)">30d</th>
+              <th data-sort="vsde" class="num" title="Спред до DE-LU (Німеччина), €/MWh">vs DE</th>
+              <th data-sort="vsit" class="num" title="Спред до IT-NORD (Італія, північ), €/MWh">vs IT</th>
               <th data-sort="mtd" class="num">MTD</th>
               <th data-sort="ytd" class="num">YTD</th>
             </tr>
@@ -457,6 +460,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=31" type="module"></script>
+  <script src="app.js?v=32" type="module"></script>
 </body>
 </html>
