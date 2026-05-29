@@ -987,7 +987,7 @@ button { font: inherit; cursor: pointer; }
 
 .pd-split {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 6fr) minmax(0, 4fr);
   gap: 14px;
   align-items: stretch;
 }
@@ -1044,6 +1044,25 @@ button { font: inherit; cursor: pointer; }
   background: #f7f8fa;
 }
 .pd-table td.pd-na  { color: #cdd2da; font-weight: 400; }
+
+/* Heat-map row extreme accents */
+.pd-table td.pd-max { font-weight: 800; color: #185a2c; }
+.pd-table td.pd-min { font-weight: 800; color: #8a1818; }
+/* Cell hover — orange ring inside the cell */
+.pd-table td.pd-cell-hover {
+  box-shadow: inset 0 0 0 2px rgba(245, 166, 35, 0.85);
+  cursor: crosshair;
+}
+
+/* Chart halo — temporary ring drawn on the chart while a table
+   cell is being hovered. Cleared on cell mouseleave. */
+.pd-svg .pd-cell-halo {
+  pointer-events: none;
+  fill: none;
+  stroke-width: 2.5;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 4px rgba(245, 166, 35, 0.55));
+}
 
 .pd-chart-wrap {
   background: #fafbfc;

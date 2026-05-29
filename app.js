@@ -3652,9 +3652,13 @@ function bindPdControls() {
     state.pd.zone = e.target.value;
     renderDynamics();
   });
-  document.getElementById('pd-product').addEventListener('change', (e) => {
-    state.pd.product = e.target.value;
-    renderDynamics();
+  document.querySelectorAll('[data-pd-product]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-pd-product]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.pd.product = btn.dataset.pdProduct;
+      renderDynamics();
+    });
   });
   document.querySelectorAll('[data-pd-unit]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3779,6 +3783,20 @@ function renderPdMonthly(years, currentYear) {
 
   // Transposed table: rows = years (+ Avg row), cols = months 1..12 (+ Avg col)
   const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const cellV = c => c == null ? null : (unit === 'pct' ? c.pct : c.value);
+
+  // Per-table min/max across all numeric body cells (excluding Avg col/row)
+  let tblMin = Infinity, tblMax = -Infinity;
+  for (let yi = 0; yi < years.length; yi++) {
+    for (let m = 0; m < 12; m++) {
+      const v = cellV(matrix[yi].cells[m]);
+      if (v == null) continue;
+      if (v > tblMax) tblMax = v;
+      if (v < tblMin) tblMin = v;
+    }
+  }
+  if (!isFinite(tblMin)) { tblMin = null; tblMax = null; }
+
   const tbl = document.getElementById('pd-table-monthly');
   let thead = '<thead><tr><th>Year</th>';
   for (let m = 1; m <= 12; m++) thead += `<th>${m}</th>`;
@@ -3786,17 +3804,26 @@ function renderPdMonthly(years, currentYear) {
   let tbody = '<tbody>';
   for (let yi = 0; yi < years.length; yi++) {
     const isCur = years[yi] === currentYear;
+    const ext = pdRowExtremes(matrix[yi].cells, cellV);
     tbody += `<tr class="${isCur ? 'pd-cur-row' : ''}"><td>${String(years[yi]).slice(2)}</td>`;
     for (let m = 0; m < 12; m++) {
       const cell = matrix[yi].cells[m];
-      tbody += `<td class="${cell == null ? 'pd-na' : ''}">${pdFmtCell(cell, unit)}</td>`;
+      const v = cellV(cell);
+      const heat = pdHeatBg(v, tblMin, tblMax);
+      const isMax = m === ext.maxIdx;
+      const isMin = m === ext.minIdx;
+      const cls = 'pd-cell' + (cell == null ? ' pd-na' : '') + (isMax ? ' pd-max' : '') + (isMin ? ' pd-min' : '');
+      const tip = cell == null ? `${years[yi]} · ${monthLabels[m]}: —` :
+        `<div class="ttl">${years[yi]} · ${monthLabels[m]}</div>` +
+        `<div class="row"><span class="lbl">Value</span><strong>${pdFmtVal(v, unit)}</strong></div>` +
+        (isMax ? `<div class="row"><span class="lbl">⬆</span>year max</div>` : '') +
+        (isMin ? `<div class="row"><span class="lbl">⬇</span>year min</div>` : '');
+      tbody += `<td class="${cls}" data-year="${years[yi]}" data-pidx="${m}" data-tooltip="${escapeHtml(tip)}" style="${heat}">${pdFmtCell(cell, unit)}</td>`;
     }
-    // Row average across months
     const valid = matrix[yi].cells.filter(c => c != null);
     let avg = null;
     if (valid.length) {
-      const key = unit === 'pct' ? 'pct' : 'value';
-      const arr = valid.map(c => c[key]).filter(v => v != null);
+      const arr = valid.map(c => unit === 'pct' ? c.pct : c.value).filter(v => v != null);
       if (arr.length) avg = arr.reduce((a, b) => a + b, 0) / arr.length;
     }
     tbody += `<td>${avg == null ? '—' : pdFmtVal(avg, unit)}</td></tr>`;
@@ -3819,6 +3846,7 @@ function renderPdMonthly(years, currentYear) {
   const grandAvg = grandN > 0 ? grandSum / grandN : null;
   tbody += `<td>${grandAvg == null ? '—' : pdFmtVal(grandAvg, unit)}</td></tr></tbody>`;
   tbl.innerHTML = thead + tbody;
+  pdWireCrossLink(tbl, 'pd-chart-monthly');
 
   // Chart: x = 1..12, one curve per year
   const seriesData = matrix.map(({ year, cells }) => ({
@@ -3844,21 +3872,43 @@ function renderPdQuarterly(years, currentYear) {
     cells: QUARTER_MONTHS.map(([mFrom, mTo]) => pdAggregate(zone, product, y, mFrom, mTo)),
   }));
   // Transposed: rows = years (+ Avg row), cols = Q1..Q4 (+ Avg col)
+  const cellV = c => c == null ? null : (unit === 'pct' ? c.pct : c.value);
+  let tblMin = Infinity, tblMax = -Infinity;
+  for (let yi = 0; yi < years.length; yi++) {
+    for (let q = 0; q < 4; q++) {
+      const v = cellV(matrix[yi].cells[q]);
+      if (v == null) continue;
+      if (v > tblMax) tblMax = v;
+      if (v < tblMin) tblMin = v;
+    }
+  }
+  if (!isFinite(tblMin)) { tblMin = null; tblMax = null; }
+
   const tbl = document.getElementById('pd-table-quarterly');
   let thead = '<thead><tr><th>Year</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th>Avg</th></tr></thead>';
   let tbody = '<tbody>';
   for (let yi = 0; yi < years.length; yi++) {
     const isCur = years[yi] === currentYear;
+    const ext = pdRowExtremes(matrix[yi].cells, cellV);
     tbody += `<tr class="${isCur ? 'pd-cur-row' : ''}"><td>${String(years[yi]).slice(2)}</td>`;
     for (let q = 0; q < 4; q++) {
       const cell = matrix[yi].cells[q];
-      tbody += `<td class="${cell == null ? 'pd-na' : ''}">${pdFmtCell(cell, unit)}</td>`;
+      const v = cellV(cell);
+      const heat = pdHeatBg(v, tblMin, tblMax);
+      const isMax = q === ext.maxIdx;
+      const isMin = q === ext.minIdx;
+      const cls = 'pd-cell' + (cell == null ? ' pd-na' : '') + (isMax ? ' pd-max' : '') + (isMin ? ' pd-min' : '');
+      const tip = cell == null ? `${years[yi]} · Q${q + 1}: —` :
+        `<div class="ttl">${years[yi]} · Q${q + 1}</div>` +
+        `<div class="row"><span class="lbl">Value</span><strong>${pdFmtVal(v, unit)}</strong></div>` +
+        (isMax ? `<div class="row"><span class="lbl">⬆</span>year max</div>` : '') +
+        (isMin ? `<div class="row"><span class="lbl">⬇</span>year min</div>` : '');
+      tbody += `<td class="${cls}" data-year="${years[yi]}" data-pidx="${q}" data-tooltip="${escapeHtml(tip)}" style="${heat}">${pdFmtCell(cell, unit)}</td>`;
     }
     const valid = matrix[yi].cells.filter(c => c != null);
     let avg = null;
     if (valid.length) {
-      const key = unit === 'pct' ? 'pct' : 'value';
-      const arr = valid.map(c => c[key]).filter(v => v != null);
+      const arr = valid.map(c => unit === 'pct' ? c.pct : c.value).filter(v => v != null);
       if (arr.length) avg = arr.reduce((a, b) => a + b, 0) / arr.length;
     }
     tbody += `<td>${avg == null ? '—' : pdFmtVal(avg, unit)}</td></tr>`;
@@ -3881,6 +3931,7 @@ function renderPdQuarterly(years, currentYear) {
   const gAvg = gN > 0 ? gSum / gN : null;
   tbody += `<td>${gAvg == null ? '—' : pdFmtVal(gAvg, unit)}</td></tr></tbody>`;
   tbl.innerHTML = thead + tbody;
+  pdWireCrossLink(tbl, 'pd-chart-quarterly');
 
   const qLabels = ['Q1','Q2','Q3','Q4'];
   const seriesData = matrix.map(({ year, cells }) => ({
@@ -3902,7 +3953,7 @@ function renderPdYearly(years, currentYear) {
   const cells = years.map(y => pdAggregate(zone, product, y, 1, 12));
 
   // Transposed table: cols = years (with current-year column highlighted),
-  // rows = Value / YoY / Days.
+  // rows = Value / YoY / Days. Heat-map per row (Value, YoY only).
   let thead = '<thead><tr><th>Metric</th>';
   for (let i = 0; i < years.length; i++) {
     const isCur = years[i] === currentYear;
@@ -3910,45 +3961,70 @@ function renderPdYearly(years, currentYear) {
   }
   thead += '</tr></thead>';
 
-  // Row 1 — Value
+  // Value row
+  const valueVals = cells.map(c => c == null ? null : (unit === 'pct' ? c.pct : c.value));
+  const valExt = pdRowExtremes(valueVals, v => v);
+  const valMin = valExt.minV === Infinity ? null : valExt.minV;
+  const valMax = valExt.maxV === -Infinity ? null : valExt.maxV;
   let row1 = `<tr><td>Value</td>`;
   for (let i = 0; i < years.length; i++) {
     const c = cells[i];
+    const v = valueVals[i];
     const isCur = years[i] === currentYear;
-    const v = c == null ? '—' : pdFmtVal(unit === 'pct' ? c.pct : c.value, unit);
-    row1 += `<td style="${isCur ? 'background:rgba(245,166,35,0.10);font-weight:700;color:#b87510;' : ''}">${v}</td>`;
+    const isMax = i === valExt.maxIdx;
+    const isMin = i === valExt.minIdx;
+    const heat = pdHeatBg(v, valMin, valMax);
+    const baseStyle = isCur ? 'font-weight:700;color:#b87510;' : '';
+    const txt = c == null ? '—' : pdFmtCell(c, unit);
+    const tip = c == null ? `${years[i]}: —` :
+      `<div class="ttl">${years[i]} · Annual</div>` +
+      `<div class="row"><span class="lbl">Value</span><strong>${pdFmtVal(v, unit)}</strong></div>` +
+      (isMax ? `<div class="row"><span class="lbl">⬆</span>highest</div>` : '') +
+      (isMin ? `<div class="row"><span class="lbl">⬇</span>lowest</div>` : '');
+    const cls = 'pd-cell' + (c == null ? ' pd-na' : '') + (isMax ? ' pd-max' : '') + (isMin ? ' pd-min' : '');
+    row1 += `<td class="${cls}" data-year="${years[i]}" data-pidx="${i}" data-tooltip="${escapeHtml(tip)}" style="${heat}${baseStyle}">${txt}</td>`;
   }
   row1 += '</tr>';
 
-  // Row 2 — YoY
+  // YoY row (delta to previous year) — heat-map per row
+  const yoyVals = [];
+  for (let i = 0; i < years.length; i++) {
+    const cur = cells[i], prev = i > 0 ? cells[i - 1] : null;
+    if (cur == null || prev == null) { yoyVals.push(null); continue; }
+    const k = unit === 'pct' ? 'pct' : 'value';
+    if (cur[k] == null || prev[k] == null) { yoyVals.push(null); continue; }
+    yoyVals.push(cur[k] - prev[k]);
+  }
+  const yoyExt = pdRowExtremes(yoyVals, v => v);
+  const yoyMin = yoyExt.minV === Infinity ? null : yoyExt.minV;
+  const yoyMax = yoyExt.maxV === -Infinity ? null : yoyExt.maxV;
   let row2 = '<tr><td>YoY</td>';
   for (let i = 0; i < years.length; i++) {
-    const cur = cells[i];
-    const prev = i > 0 ? cells[i - 1] : null;
+    const v = yoyVals[i];
     const isCur = years[i] === currentYear;
-    let yoyFmt = '—';
-    if (cur != null && prev != null) {
-      const k = unit === 'pct' ? 'pct' : 'value';
-      if (cur[k] != null && prev[k] != null) {
-        const d = cur[k] - prev[k];
-        yoyFmt = (d >= 0 ? '+' : '') + pdFmtVal(d, unit);
-      }
-    }
-    row2 += `<td style="${isCur ? 'background:rgba(245,166,35,0.10);' : ''}">${yoyFmt}</td>`;
+    const heat = pdHeatBg(v, yoyMin, yoyMax);
+    const baseStyle = isCur ? 'background:rgba(245,166,35,0.08);' : '';
+    const isTB = pdIsRatioProduct();
+    const prefix = (v != null && v >= 0 && !isTB) ? '+' : '';
+    const txt = v == null ? '—'
+      : prefix + (unit === 'pct' ? Math.round(v) + '%' : Math.round(v).toString());
+    row2 += `<td style="${heat || baseStyle}">${txt}</td>`;
   }
   row2 += '</tr>';
 
-  // Row 3 — Days
+  // Days row — informational, no heat map
   let row3 = '<tr><td>Days</td>';
   for (let i = 0; i < years.length; i++) {
     const c = cells[i];
     const isCur = years[i] === currentYear;
     const days = c ? c.days : 0;
-    row3 += `<td style="${isCur ? 'background:rgba(245,166,35,0.10);' : ''}">${days}${isCur ? ' ytd' : ''}</td>`;
+    row3 += `<td style="${isCur ? 'background:rgba(245,166,35,0.08);' : ''}">${days}${isCur ? ' ytd' : ''}</td>`;
   }
   row3 += '</tr>';
 
-  document.getElementById('pd-table-yearly').innerHTML = thead + '<tbody>' + row1 + row2 + row3 + '</tbody>';
+  const yTbl = document.getElementById('pd-table-yearly');
+  yTbl.innerHTML = thead + '<tbody>' + row1 + row2 + row3 + '</tbody>';
+  pdWireCrossLink(yTbl, 'pd-chart-yearly');
 
   // Chart: single curve with linear regression trend (closed-year-only).
   // Partial current year shows as a data point but is excluded from the
@@ -3971,18 +4047,124 @@ function renderPdYearly(years, currentYear) {
 }
 
 // ----- Formatting helpers -----------------------------------
+// `pdFmtCell` returns the compact label used inside table cells (integer
+// for %, integer for EUR — saves column width). `pdFmtVal` keeps 1 decimal
+// for use in summaries and tooltips where extra precision aids judgment.
+// TB2/TB4 use the X/Base formula (no "−1"), so values are always
+// non-negative ratios — the leading "+" is noise. Peak/Off-peak/PV/Wind
+// use (X/Base − 1)·100 and can swing either way → keep the sign.
+function pdIsRatioProduct() {
+  return state.pd.product === 'tb2' || state.pd.product === 'tb4';
+}
 function pdFmtCell(cell, unit) {
   if (cell == null) return '—';
   const v = unit === 'pct' ? cell.pct : cell.value;
-  return v == null ? '—' : pdFmtVal(v, unit);
+  if (v == null) return '—';
+  if (unit === 'pct') {
+    if (pdIsRatioProduct()) return `${Math.round(v)}%`;
+    const sign = v > 0 ? '+' : '';
+    return `${sign}${Math.round(v)}%`;
+  }
+  return Math.round(v).toString();
 }
 function pdFmtVal(v, unit) {
   if (v == null) return '—';
   if (unit === 'pct') {
+    if (pdIsRatioProduct()) return `${v.toFixed(1)}%`;
     const sign = v > 0 ? '+' : '';
     return `${sign}${v.toFixed(1)}%`;
   }
   return v.toFixed(1);
+}
+// Heat-map background color. Linearly interpolates a soft red-to-green
+// gradient based on the value's position in [min, max] of the table.
+// Returns a CSS `background:` declaration suitable for an inline style.
+function pdHeatBg(value, min, max) {
+  if (value == null || min == null || max == null || min === max) return '';
+  const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  if (t < 0.5) {
+    const k = (0.5 - t) * 2;            // 0..1 (1 = lowest)
+    const a = (0.04 + k * 0.20).toFixed(2);
+    return `background:rgba(216, 70, 58, ${a});`;
+  } else {
+    const k = (t - 0.5) * 2;            // 0..1 (1 = highest)
+    const a = (0.04 + k * 0.22).toFixed(2);
+    return `background:rgba(58, 167, 117, ${a});`;
+  }
+}
+// Returns {maxIdx, minIdx} of the largest / smallest value in `cells`.
+// `getValueFn(cell, idx)` returns the numeric value of a cell or null.
+function pdRowExtremes(cells, getValueFn) {
+  let maxV = -Infinity, minV = Infinity, maxIdx = -1, minIdx = -1;
+  for (let i = 0; i < cells.length; i++) {
+    const v = getValueFn(cells[i], i);
+    if (v == null) continue;
+    if (v > maxV) { maxV = v; maxIdx = i; }
+    if (v < minV) { minV = v; minIdx = i; }
+  }
+  return { maxIdx, minIdx, maxV, minV };
+}
+
+// ----- Chart ↔ table cross-link -----------------------------
+// Each chart drawer registers an entry so table cells can ask: "highlight
+// the chart point corresponding to (year, periodIdx)". Used for the
+// table-cell-hover → chart-glow interaction.
+const PD_CHART_REGISTRY = new Map();
+
+function pdHighlightChartPoint(svgId, year, periodIdx) {
+  const r = PD_CHART_REGISTRY.get(svgId);
+  if (!r || !r.series) return;
+  // Multi-year charts: look up the series for that exact year.
+  // Yearly chart: single series — fall back to its [0] entry; periodIdx
+  // already encodes the year position in points[].
+  let s = r.series.find(s => s.year === year);
+  if (!s && r.series.length === 1) s = r.series[0];
+  if (!s) return;
+  const p = s.points[periodIdx];
+  if (!p || p.v == null) return;
+  const svg = d3.select(`#${svgId}`);
+  svg.selectAll('.pd-cell-halo').remove();
+  svg.append('circle').attr('class', 'pd-cell-halo')
+    .attr('cx', r.xScale(periodIdx))
+    .attr('cy', r.yScale(p.v))
+    .attr('r', 8)
+    .attr('stroke', s.color);
+}
+function pdClearChartHighlight(svgId) {
+  d3.select(`#${svgId}`).selectAll('.pd-cell-halo').remove();
+}
+
+// Wire up hover behaviors on the table's data cells. `tableEl` already
+// has cells with data-year + data-pidx + data-tooltip attributes set
+// during render. The same handlers handle the precise-value tooltip too.
+function pdWireCrossLink(tableEl, chartId) {
+  const tt = document.getElementById('pd-tooltip');
+  tableEl.querySelectorAll('td.pd-cell').forEach(td => {
+    td.addEventListener('mouseenter', (e) => {
+      td.classList.add('pd-cell-hover');
+      const y = parseInt(td.dataset.year, 10);
+      const p = parseInt(td.dataset.pidx, 10);
+      if (!isNaN(y) && !isNaN(p)) pdHighlightChartPoint(chartId, y, p);
+      const tip = td.dataset.tooltip;
+      if (tt && tip) {
+        tt.innerHTML = tip;
+        tt.classList.add('visible');
+      }
+    });
+    td.addEventListener('mousemove', (e) => {
+      if (tt && tt.classList.contains('visible')) {
+        const x = e.clientX + 14, y = e.clientY + 14;
+        const tw = tt.offsetWidth, th = tt.offsetHeight;
+        tt.style.left = `${Math.min(x, window.innerWidth - tw - 8)}px`;
+        tt.style.top  = `${Math.min(y, window.innerHeight - th - 8)}px`;
+      }
+    });
+    td.addEventListener('mouseleave', () => {
+      td.classList.remove('pd-cell-hover');
+      pdClearChartHighlight(chartId);
+      if (tt) tt.classList.remove('visible');
+    });
+  });
 }
 
 // ----- Linear regression ------------------------------------
@@ -4253,6 +4435,10 @@ function drawPdMultiYearChart(svgId, legendId, seriesData, xLabels, currentYear,
     linePaths.push({ year: s.year, color, points: s.points });
   }
 
+  // Register chart with cross-link registry so table-cell hover can
+  // address points by (year, periodIdx).
+  PD_CHART_REGISTRY.set(svgId, { xScale, yScale, series: linePaths });
+
   // Glowing value labels for the CURRENT-YEAR curve.
   // For each non-null point of the current year, render an amber dot + a
   // rounded badge with the value above the line. drawn last so they sit
@@ -4396,6 +4582,13 @@ function drawPdYearlyChart(svgId, legendId, points, regression, currentYear) {
 
   const n = points.length;
   const xScale = i => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+
+  // Register for cross-link: yearly chart is a single curve, so series[0]
+  // holds the entire points array (year-indexed by position).
+  PD_CHART_REGISTRY.set(svgId, {
+    xScale, yScale,
+    series: [{ year: null, color: '#378ADD', points }],
+  });
 
   // Gridlines
   for (let k = 0; k < 5; k++) {

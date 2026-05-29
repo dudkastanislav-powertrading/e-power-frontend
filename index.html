@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RedKlen — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=29" />
+  <link rel="stylesheet" href="style.css?v=30" />
 </head>
 <body>
   <header class="topbar">
@@ -371,15 +371,15 @@
           <select id="pd-zone"></select>
         </div>
         <div class="sp-ctrl">
-          <label for="pd-product">Product</label>
-          <select id="pd-product">
-            <option value="peak">Peak</option>
-            <option value="offpeak">Off-peak</option>
-            <option value="tb2">TB2 spread</option>
-            <option value="tb4">TB4 spread</option>
-            <option value="pv">PV capture</option>
-            <option value="wind">Wind capture</option>
-          </select>
+          <label>Product</label>
+          <div class="seg-toggle" role="group" aria-label="Product">
+            <button type="button" class="seg-btn active" data-pd-product="peak">Peak</button>
+            <button type="button" class="seg-btn" data-pd-product="offpeak">Off-peak</button>
+            <button type="button" class="seg-btn" data-pd-product="tb2">TB2</button>
+            <button type="button" class="seg-btn" data-pd-product="tb4">TB4</button>
+            <button type="button" class="seg-btn" data-pd-product="pv">PV</button>
+            <button type="button" class="seg-btn" data-pd-product="wind">Wind</button>
+          </div>
         </div>
         <div class="sp-ctrl">
           <label>Unit</label>
@@ -457,6 +457,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=29" type="module"></script>
+  <script src="app.js?v=30" type="module"></script>
 </body>
 </html>
