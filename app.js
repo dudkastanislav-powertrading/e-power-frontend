@@ -2121,6 +2121,48 @@ function atcAwareStats(zoneA, zoneB, isoDates) {
   };
 }
 
+// Per-date daily JAO marginal price — one value per day in `isoDates`,
+// derived from borders.json daily mb (baseload mp). Used as the line
+// overlay on the Month-section Daily-averages chart so a trader sees
+// the JAO cost evolving day-by-day alongside the realised effective
+// spread bars. Returns null if no data at all for the selected pair.
+function dailyMarginalForDates(zoneA, zoneB, isoDates) {
+  if (!state.borders) return null;
+  const b1 = [zoneA, zoneB].sort().join('-');
+  const wantDirs = _wantDirsFor(zoneA, zoneB);
+  const out = [];
+  let anyHit = false;
+  for (const d of isoDates) {
+    let sum = 0, n = 0;
+    for (const dir of wantDirs) {
+      const row = state.borders.get(`${b1}|${dir}|${d}`);
+      if (row && row.mb != null) { sum += row.mb; n++; }
+    }
+    const v = n > 0 ? sum / n : null;
+    if (v != null) anyHit = true;
+    out.push(v);
+  }
+  return anyHit ? out : null;
+}
+
+// 12-element array of monthly-average JAO mp for the given year. Used
+// on the Year-section Monthly-averages chart. Current-year months past
+// today contribute their YTD partial average; future months stay null.
+function monthlyMarginalForYear(zoneA, zoneB, year) {
+  if (!state.borders) return null;
+  const today = todayISO();
+  const out = new Array(12).fill(null);
+  let anyHit = false;
+  for (let m = 0; m < 12; m++) {
+    const ym = `${year}-${String(m + 1).padStart(2, '0')}`;
+    const days = isoDatesOfMonth(ym).filter(d => d <= today);
+    if (days.length === 0) continue;
+    const v = jaoMpForPeriod(zoneA, zoneB, days);
+    if (v != null) { anyHit = true; out[m] = v; }
+  }
+  return anyHit ? out : null;
+}
+
 // 24-hour profile of the marginal price averaged over a list of dates.
 // Useful for the Month / Year 24h-profile charts.
 function avgHourlyMarginalForDates(zoneA, zoneB, isoDates) {
@@ -2221,7 +2263,9 @@ function renderSpMonth() {
     for (const v of disp) { if (v != null) { s += v; n++; } }
     return n > 0 ? s / n : null;
   });
-  drawDailyBars('sp-month-daily', dailyVals, days);
+  drawDailyBars('sp-month-daily', dailyVals, days, {
+    lineArr: dailyMarginalForDates(zoneA, zoneB, days),
+  });
 
   // 24h profile averaged across the month
   const displayed = dayArrays.map(applySpreadMode);
@@ -2268,7 +2312,9 @@ function renderSpYear() {
     }
     months.push({ ym: yyyy_mm, val: n > 0 ? s / n : null });
   }
-  drawMonthlyBars('sp-year-monthly', months);
+  drawMonthlyBars('sp-year-monthly', months, {
+    lineArr: monthlyMarginalForYear(zoneA, zoneB, yearY),
+  });
 
   // 24h profile averaged across the year
   const displayed = dayArrays.map(applySpreadMode);
@@ -2636,7 +2682,8 @@ function drawHourBars(svgId, arr, opts) {
   });
 }
 
-function drawDailyBars(svgId, arr, isoDates) {
+function drawDailyBars(svgId, arr, isoDates, opts) {
+  opts = opts || {};
   const svg = d3.select(`#${svgId}`);
   svg.selectAll('*').remove();
   const { W, H } = spChartDims(svg, 240);
@@ -2646,23 +2693,33 @@ function drawDailyBars(svgId, arr, isoDates) {
        .attr('fill','#cdd2da').attr('font-size',12).text('No data');
     return;
   }
+  const lineArr = opts.lineArr;
+  const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
     xLabel: i => String(i + 1),
     xLabelEvery: arr.length > 20 ? 3 : 2,
+    lineArr: hasLine ? lineArr : null,
+    lineLabel: hasLine ? (opts.lineLabel || 'JAO marginal €/MW') : null,
     tooltipFor: (i, v) => {
       const dateLabel = isoDates && isoDates[i] ? isoDates[i] : `Day ${i + 1}`;
       const valTxt = v == null ? '<span class="lbl">no data</span>'
                                 : `<strong>${(v >= 0 ? '+' : '')}${v.toFixed(2)} €/MWh</strong>`;
+      const mp = hasLine ? lineArr[i] : null;
+      const mpRow = mp != null
+        ? `<div class="row"><span class="lbl">JAO marginal</span><strong>${mp.toFixed(2)} €/MW</strong></div>`
+        : '';
       return `
         <div class="ttl">Daily average</div>
         <div class="row"><span class="lbl">Date</span><span>${dateLabel}</span></div>
-        <div class="row"><span class="lbl">Avg</span>${valTxt}</div>`;
+        <div class="row"><span class="lbl">Avg</span>${valTxt}</div>
+        ${mpRow}`;
     },
   });
 }
 
-function drawMonthlyBars(svgId, months) {
+function drawMonthlyBars(svgId, months, opts) {
+  opts = opts || {};
   const svg = d3.select(`#${svgId}`);
   svg.selectAll('*').remove();
   const { W, H } = spChartDims(svg, 240);
@@ -2674,18 +2731,27 @@ function drawMonthlyBars(svgId, months) {
     return;
   }
   const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const lineArr = opts.lineArr;
+  const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
     xLabel: i => monthLabels[i] || '',
     xLabelEvery: 1,
+    lineArr: hasLine ? lineArr : null,
+    lineLabel: hasLine ? (opts.lineLabel || 'JAO marginal €/MW') : null,
     tooltipFor: (i, v) => {
       const ymLabel = months[i] && months[i].ym ? months[i].ym : monthLabels[i];
       const valTxt = v == null ? '<span class="lbl">no data</span>'
                                 : `<strong>${(v >= 0 ? '+' : '')}${v.toFixed(2)} €/MWh</strong>`;
+      const mp = hasLine ? lineArr[i] : null;
+      const mpRow = mp != null
+        ? `<div class="row"><span class="lbl">JAO marginal</span><strong>${mp.toFixed(2)} €/MW</strong></div>`
+        : '';
       return `
         <div class="ttl">Monthly average</div>
         <div class="row"><span class="lbl">Month</span><span>${ymLabel}</span></div>
-        <div class="row"><span class="lbl">Avg</span>${valTxt}</div>`;
+        <div class="row"><span class="lbl">Avg</span>${valTxt}</div>
+        ${mpRow}`;
     },
   });
 }
