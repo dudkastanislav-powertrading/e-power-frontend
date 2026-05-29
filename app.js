@@ -1617,8 +1617,18 @@ async function showView(view) {
     renderGen();
   }
   if (isPD) {
-    await initDynamicsView();
-    renderDynamics();
+    try {
+      await initDynamicsView();
+      renderDynamics();
+    } catch (e) {
+      console.error('[product-dynamics]', e);
+      const st = document.getElementById('pd-status');
+      if (st) {
+        st.textContent = 'Render error: ' + (e && e.message || e) + ' — open browser console for stack.';
+        st.classList.remove('hidden');
+        st.classList.add('error');
+      }
+    }
   }
 }
 
@@ -3726,25 +3736,21 @@ function renderPdMonthly(years, currentYear) {
     return { year: y, cells };
   });
 
-  // Build table: rows = months (Jan..Dec) + Avg, cols = year
+  // Transposed table: rows = years (+ Avg row), cols = months 1..12 (+ Avg col)
   const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const tbl = document.getElementById('pd-table-monthly');
-  let thead = '<thead><tr><th>Mo</th>';
-  for (const y of years) thead += `<th>${String(y).slice(2)}</th>`;
-  thead += '</tr></thead>';
+  let thead = '<thead><tr><th>Year</th>';
+  for (let m = 1; m <= 12; m++) thead += `<th>${m}</th>`;
+  thead += '<th>Avg</th></tr></thead>';
   let tbody = '<tbody>';
-  for (let m = 0; m < 12; m++) {
-    tbody += `<tr><td>${monthLabels[m]}</td>`;
-    for (let yi = 0; yi < years.length; yi++) {
-      const cell = matrix[yi].cells[m];
-      const isCur = years[yi] === currentYear;
-      tbody += `<td class="${isCur ? 'pd-cur ' : ''}${cell == null ? 'pd-na' : ''}">${pdFmtCell(cell, unit)}</td>`;
-    }
-    tbody += '</tr>';
-  }
-  // Avg row
-  tbody += '<tr class="pd-avg"><td>Avg</td>';
   for (let yi = 0; yi < years.length; yi++) {
+    const isCur = years[yi] === currentYear;
+    tbody += `<tr class="${isCur ? 'pd-cur-row' : ''}"><td>${String(years[yi]).slice(2)}</td>`;
+    for (let m = 0; m < 12; m++) {
+      const cell = matrix[yi].cells[m];
+      tbody += `<td class="${cell == null ? 'pd-na' : ''}">${pdFmtCell(cell, unit)}</td>`;
+    }
+    // Row average across months
     const valid = matrix[yi].cells.filter(c => c != null);
     let avg = null;
     if (valid.length) {
@@ -3752,9 +3758,25 @@ function renderPdMonthly(years, currentYear) {
       const arr = valid.map(c => c[key]).filter(v => v != null);
       if (arr.length) avg = arr.reduce((a, b) => a + b, 0) / arr.length;
     }
-    tbody += `<td>${avg == null ? '—' : pdFmtVal(avg, unit)}</td>`;
+    tbody += `<td>${avg == null ? '—' : pdFmtVal(avg, unit)}</td></tr>`;
   }
-  tbody += '</tr></tbody>';
+  // Avg row across years per month
+  tbody += '<tr class="pd-avg"><td>Avg</td>';
+  let grandSum = 0, grandN = 0;
+  for (let m = 0; m < 12; m++) {
+    let s = 0, n = 0;
+    for (let yi = 0; yi < years.length; yi++) {
+      const c = matrix[yi].cells[m];
+      if (!c) continue;
+      const v = unit === 'pct' ? c.pct : c.value;
+      if (v != null) { s += v; n++; }
+    }
+    const v = n > 0 ? s / n : null;
+    if (v != null) { grandSum += v; grandN++; }
+    tbody += `<td>${v == null ? '—' : pdFmtVal(v, unit)}</td>`;
+  }
+  const grandAvg = grandN > 0 ? grandSum / grandN : null;
+  tbody += `<td>${grandAvg == null ? '—' : pdFmtVal(grandAvg, unit)}</td></tr></tbody>`;
   tbl.innerHTML = thead + tbody;
 
   // Chart: x = 1..12, one curve per year
@@ -3780,22 +3802,17 @@ function renderPdQuarterly(years, currentYear) {
     year: y,
     cells: QUARTER_MONTHS.map(([mFrom, mTo]) => pdAggregate(zone, product, y, mFrom, mTo)),
   }));
+  // Transposed: rows = years (+ Avg row), cols = Q1..Q4 (+ Avg col)
   const tbl = document.getElementById('pd-table-quarterly');
-  let thead = '<thead><tr><th>Q</th>';
-  for (const y of years) thead += `<th>${String(y).slice(2)}</th>`;
-  thead += '</tr></thead>';
+  let thead = '<thead><tr><th>Year</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th>Avg</th></tr></thead>';
   let tbody = '<tbody>';
-  for (let q = 0; q < 4; q++) {
-    tbody += `<tr><td>Q${q+1}</td>`;
-    for (let yi = 0; yi < years.length; yi++) {
-      const cell = matrix[yi].cells[q];
-      const isCur = years[yi] === currentYear;
-      tbody += `<td class="${isCur ? 'pd-cur ' : ''}${cell == null ? 'pd-na' : ''}">${pdFmtCell(cell, unit)}</td>`;
-    }
-    tbody += '</tr>';
-  }
-  tbody += '<tr class="pd-avg"><td>Avg</td>';
   for (let yi = 0; yi < years.length; yi++) {
+    const isCur = years[yi] === currentYear;
+    tbody += `<tr class="${isCur ? 'pd-cur-row' : ''}"><td>${String(years[yi]).slice(2)}</td>`;
+    for (let q = 0; q < 4; q++) {
+      const cell = matrix[yi].cells[q];
+      tbody += `<td class="${cell == null ? 'pd-na' : ''}">${pdFmtCell(cell, unit)}</td>`;
+    }
     const valid = matrix[yi].cells.filter(c => c != null);
     let avg = null;
     if (valid.length) {
@@ -3803,9 +3820,25 @@ function renderPdQuarterly(years, currentYear) {
       const arr = valid.map(c => c[key]).filter(v => v != null);
       if (arr.length) avg = arr.reduce((a, b) => a + b, 0) / arr.length;
     }
-    tbody += `<td>${avg == null ? '—' : pdFmtVal(avg, unit)}</td>`;
+    tbody += `<td>${avg == null ? '—' : pdFmtVal(avg, unit)}</td></tr>`;
   }
-  tbody += '</tr></tbody>';
+  // Avg row across years per quarter
+  tbody += '<tr class="pd-avg"><td>Avg</td>';
+  let gSum = 0, gN = 0;
+  for (let q = 0; q < 4; q++) {
+    let s = 0, n = 0;
+    for (let yi = 0; yi < years.length; yi++) {
+      const c = matrix[yi].cells[q];
+      if (!c) continue;
+      const v = unit === 'pct' ? c.pct : c.value;
+      if (v != null) { s += v; n++; }
+    }
+    const v = n > 0 ? s / n : null;
+    if (v != null) { gSum += v; gN++; }
+    tbody += `<td>${v == null ? '—' : pdFmtVal(v, unit)}</td>`;
+  }
+  const gAvg = gN > 0 ? gSum / gN : null;
+  tbody += `<td>${gAvg == null ? '—' : pdFmtVal(gAvg, unit)}</td></tr></tbody>`;
   tbl.innerHTML = thead + tbody;
 
   const qLabels = ['Q1','Q2','Q3','Q4'];
@@ -3827,13 +3860,31 @@ function renderPdYearly(years, currentYear) {
   const { zone, product, unit } = state.pd;
   const cells = years.map(y => pdAggregate(zone, product, y, 1, 12));
 
-  // Table: Year | Value | YoY | Days
-  let tbody = '<tbody>';
+  // Transposed table: cols = years (with current-year column highlighted),
+  // rows = Value / YoY / Days.
+  let thead = '<thead><tr><th>Metric</th>';
+  for (let i = 0; i < years.length; i++) {
+    const isCur = years[i] === currentYear;
+    thead += `<th class="${isCur ? 'pd-cur-col' : ''}" style="${isCur ? 'color:#b87510;' : ''}">${String(years[i]).slice(2)}</th>`;
+  }
+  thead += '</tr></thead>';
+
+  // Row 1 — Value
+  let row1 = `<tr><td>Value</td>`;
+  for (let i = 0; i < years.length; i++) {
+    const c = cells[i];
+    const isCur = years[i] === currentYear;
+    const v = c == null ? '—' : pdFmtVal(unit === 'pct' ? c.pct : c.value, unit);
+    row1 += `<td style="${isCur ? 'background:rgba(245,166,35,0.10);font-weight:700;color:#b87510;' : ''}">${v}</td>`;
+  }
+  row1 += '</tr>';
+
+  // Row 2 — YoY
+  let row2 = '<tr><td>YoY</td>';
   for (let i = 0; i < years.length; i++) {
     const cur = cells[i];
     const prev = i > 0 ? cells[i - 1] : null;
     const isCur = years[i] === currentYear;
-    const valFmt = cur == null ? '—' : pdFmtVal(unit === 'pct' ? cur.pct : cur.value, unit);
     let yoyFmt = '—';
     if (cur != null && prev != null) {
       const k = unit === 'pct' ? 'pct' : 'value';
@@ -3842,25 +3893,36 @@ function renderPdYearly(years, currentYear) {
         yoyFmt = (d >= 0 ? '+' : '') + pdFmtVal(d, unit);
       }
     }
-    const days = cur ? cur.days : 0;
-    tbody += `<tr><td>${years[i]}</td>` +
-             `<td class="${isCur ? 'pd-cur' : ''}">${valFmt}</td>` +
-             `<td>${yoyFmt}</td>` +
-             `<td>${days}${isCur ? ' ytd' : ''}</td></tr>`;
+    row2 += `<td style="${isCur ? 'background:rgba(245,166,35,0.10);' : ''}">${yoyFmt}</td>`;
   }
-  tbody += '</tbody>';
-  document.getElementById('pd-table-yearly').innerHTML =
-    '<thead><tr><th>Year</th><th>Value</th><th>YoY</th><th>Days</th></tr></thead>' + tbody;
+  row2 += '</tr>';
 
-  // Chart: single curve with linear regression trend
+  // Row 3 — Days
+  let row3 = '<tr><td>Days</td>';
+  for (let i = 0; i < years.length; i++) {
+    const c = cells[i];
+    const isCur = years[i] === currentYear;
+    const days = c ? c.days : 0;
+    row3 += `<td style="${isCur ? 'background:rgba(245,166,35,0.10);' : ''}">${days}${isCur ? ' ytd' : ''}</td>`;
+  }
+  row3 += '</tr>';
+
+  document.getElementById('pd-table-yearly').innerHTML = thead + '<tbody>' + row1 + row2 + row3 + '</tbody>';
+
+  // Chart: single curve with linear regression trend (closed-year-only).
+  // Partial current year shows as a data point but is excluded from the
+  // regression so the trend stays stable until year-end.
   const pts = years.map((y, i) => {
     const c = cells[i];
     return { x: i + 1, label: String(y), year: y,
       v: c == null ? null : (unit === 'pct' ? c.pct : c.value),
     };
   });
-  const validPts = pts.filter(p => p.v != null);
-  const regression = pdLinearRegression(validPts.map(p => p.x), validPts.map(p => p.v));
+  const cutoff = pdLatestClosedMonth();
+  const closedPts = pts.filter(p => p.v != null && pdIsYearClosed(p.year, cutoff));
+  const regression = closedPts.length >= 2
+    ? pdLinearRegression(closedPts.map(p => p.x), closedPts.map(p => p.v))
+    : { slope: null, intercept: null, r2: null, n: 0 };
   drawPdYearlyChart('pd-chart-yearly', 'pd-legend-yearly', pts, regression, currentYear);
 
   document.getElementById('pd-summary-yearly').innerHTML =
@@ -3906,6 +3968,37 @@ function pdLinearRegression(xs, ys) {
   return { slope, intercept, r2, n };
 }
 
+// ----- "Latest closed month" rule ---------------------------
+// Summaries should not flicker mid-month from partial data. A month is
+// considered "closed" only on day 5 of the following month. So on May 29
+// the latest closed month is April; on June 4 it is still April; on June 5
+// it becomes May.
+function pdLatestClosedMonth() {
+  const today = new Date();
+  const day = today.getUTCDate();
+  let m = today.getUTCMonth() + 1;     // 1..12
+  let y = today.getUTCFullYear();
+  m = day >= 5 ? m - 1 : m - 2;
+  while (m <= 0) { m += 12; y -= 1; }
+  return { year: y, month: m };
+}
+function pdIsCellClosed(year, month1To12, cutoff) {
+  if (year < cutoff.year) return true;
+  if (year > cutoff.year) return false;
+  return month1To12 <= cutoff.month;
+}
+function pdIsQuarterClosed(year, quarter1To4, cutoff) {
+  // A quarter is closed if its last month is at or before cutoff
+  return pdIsCellClosed(year, quarter1To4 * 3, cutoff);
+}
+function pdIsYearClosed(year, cutoff) {
+  return pdIsCellClosed(year, 12, cutoff);
+}
+function pdCutoffLabel(cutoff) {
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${monthLabels[cutoff.month - 1]} ${cutoff.year}`;
+}
+
 // ----- Auto-generated summaries -----------------------------
 function pdTrendTag(r2, slope, unit) {
   if (slope == null || r2 == null) return { tag: 'flat', text: 'no clear trend' };
@@ -3917,12 +4010,21 @@ function pdTrendTag(r2, slope, unit) {
 }
 
 function pdSummaryMonthly(matrix, years, currentYear, unit) {
-  // Compute annual averages over 12 months
-  const annual = matrix.map(({ year, cells }) => {
+  // Trend analysis uses only fully CLOSED months (per the 5th-of-month rule
+  // — see pdLatestClosedMonth). Current partial month is excluded so the
+  // comment doesn't flicker mid-month.
+  const cutoff = pdLatestClosedMonth();
+  const filtered = matrix.map(({ year, cells }) => ({
+    year,
+    cells: cells.map((c, mi) => pdIsCellClosed(year, mi + 1, cutoff) ? c : null),
+  }));
+  const annual = filtered.map(({ year, cells }) => {
     const arr = cells.map(c => c == null ? null : (unit === 'pct' ? c.pct : c.value))
                      .filter(v => v != null);
     return { year, avg: arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null };
   }).filter(a => a.avg != null);
+  // Reuse `matrix` reference name below by aliasing the filtered set.
+  matrix = filtered;
   if (annual.length < 2) return `<span class="pd-tag flat">N/A</span>Insufficient history to assess monthly trend.`;
   const xs = annual.map(a => a.year);
   const ys = annual.map(a => a.avg);
@@ -3967,7 +4069,13 @@ function pdSummaryMonthly(matrix, years, currentYear, unit) {
 }
 
 function pdSummaryQuarterly(matrix, years, currentYear, unit) {
-  // Annual averages from quarters
+  // Drop in-progress quarter from analysis (5th-day rule on month boundary).
+  const cutoff = pdLatestClosedMonth();
+  const filtered = matrix.map(({ year, cells }) => ({
+    year,
+    cells: cells.map((c, qi) => pdIsQuarterClosed(year, qi + 1, cutoff) ? c : null),
+  }));
+  matrix = filtered;
   const annual = matrix.map(({ year, cells }) => {
     const arr = cells.map(c => c == null ? null : (unit === 'pct' ? c.pct : c.value))
                      .filter(v => v != null);
@@ -4012,9 +4120,21 @@ function pdSummaryQuarterly(matrix, years, currentYear, unit) {
 }
 
 function pdSummaryYearly(cells, years, currentYear, unit, regression) {
-  const valid = cells.map((c, i) => ({ y: years[i], v: c == null ? null : (unit === 'pct' ? c.pct : c.value) }))
-                     .filter(p => p.v != null);
-  if (valid.length < 3) return `<span class="pd-tag flat">N/A</span>Need at least 3 years for a yearly trend.`;
+  // Yearly summary uses only FULLY CLOSED years (December must be closed
+  // per the 5th-day rule). Partial current YTD year is excluded so the
+  // trend interpretation doesn't shift mid-year.
+  const cutoff = pdLatestClosedMonth();
+  const closedPairs = years.map((y, i) => ({ y, c: cells[i] }))
+                           .filter(p => pdIsYearClosed(p.y, cutoff));
+  const valid = closedPairs.map(p => ({ y: p.y,
+    v: p.c == null ? null : (unit === 'pct' ? p.c.pct : p.c.value) }))
+                           .filter(p => p.v != null);
+  if (valid.length < 3) {
+    return `<span class="pd-tag flat">N/A</span>Need at least 3 fully-closed years for a yearly trend. ` +
+           `Data through ${pdCutoffLabel(cutoff)}.`;
+  }
+  // Re-compute regression on the closed-only subset
+  regression = pdLinearRegression(valid.map(p => p.y), valid.map(p => p.v));
   const trend = pdTrendTag(regression.r2, regression.slope, unit);
   const first = valid[0], last = valid[valid.length - 1];
   const deltaTxt = pdFmtVal(last.v - first.v, unit);
@@ -4090,6 +4210,44 @@ function drawPdMultiYearChart(svgId, legendId, seriesData, xLabels, currentYear,
        .attr('opacity', 0);
     path.transition().duration(450).delay(50).attr('opacity', 1);
     linePaths.push({ year: s.year, color, points: s.points });
+  }
+
+  // Glowing value labels for the CURRENT-YEAR curve.
+  // For each non-null point of the current year, render an amber dot + a
+  // rounded badge with the value above the line. drawn last so they sit
+  // on top of everything else.
+  const curSeries = seriesData.find(s => s.year === currentYear);
+  if (curSeries) {
+    const fmtV = v => state.pd.unit === 'pct'
+      ? `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+      : `${v.toFixed(1)}`;
+    for (let i = 0; i < curSeries.points.length; i++) {
+      const p = curSeries.points[i];
+      if (p.v == null) continue;
+      const cx = xScale(i), cy = yScale(p.v);
+      // Glow dot
+      svg.append('circle').attr('class', 'pd-cur-dot')
+         .attr('cx', cx).attr('cy', cy).attr('r', 3.6)
+         .attr('opacity', 0)
+         .transition().duration(380).delay(250 + i * 25).attr('opacity', 1);
+      // Label badge — position above the point (or below if near top)
+      const txt = fmtV(p.v);
+      const charW = 6.0;          // approx glyph width @10px
+      const w = txt.length * charW + 8;
+      const h = 14;
+      const above = cy > padT + h + 6;
+      const lblY = above ? cy - 10 : cy + 12;
+      const g = svg.append('g').attr('opacity', 0);
+      g.append('rect').attr('class', 'pd-cur-label-bg')
+       .attr('x', cx - w / 2).attr('y', lblY - h + 2)
+       .attr('width', w).attr('height', h)
+       .attr('rx', 3).attr('ry', 3);
+      g.append('text').attr('class', 'pd-cur-label')
+       .attr('x', cx).attr('y', lblY - 1)
+       .attr('text-anchor', 'middle')
+       .text(txt);
+      g.transition().duration(380).delay(280 + i * 25).attr('opacity', 1);
+    }
   }
 
   // X labels
@@ -4238,10 +4396,33 @@ function drawPdYearlyChart(svgId, legendId, points, regression, currentYear) {
     if (p.v == null) continue;
     const isCur = p.year === currentYear;
     svg.append('circle')
+       .attr('class', isCur ? 'pd-cur-dot' : '')
        .attr('cx', xScale(i)).attr('cy', yScale(p.v))
-       .attr('r', isCur ? 4 : 3.2)
+       .attr('r', isCur ? 4.5 : 3.2)
        .attr('fill', pdYearColor(p.year, currentYear))
        .attr('stroke', '#fff').attr('stroke-width', 1);
+  }
+  // Glowing badge for current year value
+  const curIdx = points.findIndex(p => p.year === currentYear && p.v != null);
+  if (curIdx >= 0) {
+    const p = points[curIdx];
+    const cx = xScale(curIdx), cy = yScale(p.v);
+    const fmtV = v => state.pd.unit === 'pct'
+      ? `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+      : `${v.toFixed(1)}`;
+    const txt = fmtV(p.v);
+    const w = txt.length * 6 + 8;
+    const h = 14;
+    const above = cy > padT + h + 6;
+    const lblY = above ? cy - 10 : cy + 12;
+    svg.append('rect').attr('class', 'pd-cur-label-bg')
+       .attr('x', cx - w / 2).attr('y', lblY - h + 2)
+       .attr('width', w).attr('height', h)
+       .attr('rx', 3).attr('ry', 3);
+    svg.append('text').attr('class', 'pd-cur-label')
+       .attr('x', cx).attr('y', lblY - 1)
+       .attr('text-anchor', 'middle')
+       .text(txt);
   }
 
   // X labels
