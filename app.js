@@ -2061,6 +2061,89 @@ function isoDatesOfYear(y) {
   return out;
 }
 
+// ----- Trailing position-matched reference (normal + P5–P95 band) -----
+// A reference / "normal" curve MUST mirror the chart's x-granularity:
+// per-hour for 24h profiles, per-day for daily charts, per-month for monthly.
+// Never a single flat number against a position-varying series. Baseline here
+// = trailing window (recent regime), corridor = P5–P95. Same idiom as the
+// Generation view (historical mean + corridor), applied to spreads with the
+// current A/B / direction / spread-type / CBC settings via applySpreadMode.
+function _pctSorted(a, p) {
+  if (!a.length) return null;
+  const idx = (a.length - 1) * p;
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (idx - lo);
+}
+function _isoShift(iso, days) { const d = parseISO(iso); d.setUTCDate(d.getUTCDate() + days); return ymd(d); }
+function _isoRange(fromISO, toISO) {
+  const out = []; let d = parseISO(fromISO); const end = parseISO(toISO);
+  while (d <= end) { out.push(ymd(d)); d.setUTCDate(d.getUTCDate() + 1); }
+  return out;
+}
+// Mean of the displayed (mode-applied) spread over one day's 24 hours.
+function dailyAvgSpread(zoneA, zoneB, isoDate) {
+  const disp = applySpreadMode(pairHoursForDate(zoneA, zoneB, isoDate));
+  if (!disp) return null;
+  let s = 0, n = 0; for (const v of disp) { if (v != null) { s += v; n++; } }
+  return n > 0 ? s / n : null;
+}
+function monthlyAvgSpreadVal(zoneA, zoneB, ym) {
+  const today = todayISO();
+  const vals = isoDatesOfMonth(ym).filter(d => d <= today)
+                 .map(d => dailyAvgSpread(zoneA, zoneB, d)).filter(v => v != null);
+  return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+}
+// Per-hour {mean,lo,hi}[24] over a set of dates (mode-applied), P5–P95.
+function perHourRefStats(zoneA, zoneB, isoDates) {
+  const buckets = Array.from({ length: 24 }, () => []);
+  for (const d of isoDates) {
+    const disp = applySpreadMode(pairHoursForDate(zoneA, zoneB, d));
+    if (!disp) continue;
+    for (let h = 0; h < 24; h++) if (disp[h] != null) buckets[h].push(disp[h]);
+  }
+  const mean = [], lo = [], hi = [];
+  for (let h = 0; h < 24; h++) {
+    const a = buckets[h].slice().sort((x, y) => x - y);
+    if (a.length < 5) { mean.push(null); lo.push(null); hi.push(null); continue; }
+    mean.push(a.reduce((s, v) => s + v, 0) / a.length);
+    lo.push(_pctSorted(a, 0.05)); hi.push(_pctSorted(a, 0.95));
+  }
+  return { mean, lo, hi };
+}
+// Per-day {mean,lo,hi} aligned to `days`, each from a trailing W-day window
+// of daily-average spreads ending the day before that bar.
+function perDayRefStats(zoneA, zoneB, days, W) {
+  const mean = [], lo = [], hi = [];
+  for (const d of days) {
+    const win = _isoRange(_isoShift(d, -W), _isoShift(d, -1))
+                  .map(x => dailyAvgSpread(zoneA, zoneB, x))
+                  .filter(v => v != null).sort((x, y) => x - y);
+    if (win.length < 5) { mean.push(null); lo.push(null); hi.push(null); continue; }
+    mean.push(win.reduce((s, v) => s + v, 0) / win.length);
+    lo.push(_pctSorted(win, 0.05)); hi.push(_pctSorted(win, 0.95));
+  }
+  return { mean, lo, hi };
+}
+// Per-month {mean,lo,hi}[12] for year Y, each from the trailing 12 monthly
+// averages ending the month before that bar.
+function perMonthRefStats(zoneA, zoneB, year) {
+  const mean = new Array(12).fill(null), lo = new Array(12).fill(null), hi = new Array(12).fill(null);
+  for (let m = 0; m < 12; m++) {
+    const samples = [];
+    for (let k = 1; k <= 12; k++) {
+      const dt = new Date(Date.UTC(year, m - k, 1));
+      const ym = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
+      const v = monthlyAvgSpreadVal(zoneA, zoneB, ym);
+      if (v != null) samples.push(v);
+    }
+    if (samples.length < 4) continue;
+    samples.sort((x, y) => x - y);
+    mean[m] = samples.reduce((s, v) => s + v, 0) / samples.length;
+    lo[m] = _pctSorted(samples, 0.05); hi[m] = _pctSorted(samples, 0.95);
+  }
+  return { mean, lo, hi };
+}
+
 // ----- Aggregations for side-stats table --------------------
 // Returns { base, effective, count, hoursPositive, totalHours }
 function aggregateStats(rawArrays) {
@@ -2353,10 +2436,13 @@ function renderSpDay() {
   const displayArr = applySpreadMode(raw);
   const mpArr = hourlyMarginalForDate(zoneA, zoneB, dayDate);
   const atcArr = hourlyAtcForDate(zoneA, zoneB, dayDate);
+  // Trailing per-hour normal: last 30 days before this day.
+  const refDay = perHourRefStats(zoneA, zoneB, _isoRange(_isoShift(dayDate, -30), _isoShift(dayDate, -1)));
   drawHourBars('sp-day-chart', displayArr, {
     ctx: `${pairLabel()} · ${dayDate}`,
     lineArr: mpArr,
     atcArr,
+    ref: refDay,
   });
 
   const stats = aggregateStats(raw ? [raw] : []);
@@ -2382,8 +2468,11 @@ function renderSpMonth() {
     for (const v of disp) { if (v != null) { s += v; n++; } }
     return n > 0 ? s / n : null;
   });
+  // Per-day trailing normal: each day vs its prior 30-day window.
+  const refMonthDaily = perDayRefStats(zoneA, zoneB, days, 30);
   drawDailyBars('sp-month-daily', dailyVals, days, {
     lineArr: dailyMarginalForDates(zoneA, zoneB, days),
+    ref: refMonthDaily,
   });
 
   // 24h profile averaged across the month
@@ -2391,10 +2480,16 @@ function renderSpMonth() {
   const profile = avgProfile(displayed);
   const mpProfile = avgHourlyMarginalForDates(zoneA, zoneB, days);
   const atcProfile = avgHourlyAtcForDates(zoneA, zoneB, days);
+  // Per-hour trailing normal: last 90 days ending at month-end (capped today).
+  const todayMH = todayISO();
+  const lastDayMH = days[days.length - 1];
+  const endRefMH = lastDayMH <= todayMH ? lastDayMH : todayMH;
+  const refMonthHourly = perHourRefStats(zoneA, zoneB, _isoRange(_isoShift(endRefMH, -89), endRefMH));
   drawHourBars('sp-month-hourly', profile, {
     ctx: `${pairLabel()} · ${monthYM} · 24h avg`,
     lineArr: mpProfile,
     atcArr: atcProfile,
+    ref: refMonthHourly,
   });
 
   const stats = aggregateStats(dayArrays);
@@ -2431,8 +2526,11 @@ function renderSpYear() {
     }
     months.push({ ym: yyyy_mm, val: n > 0 ? s / n : null });
   }
+  // Per-month trailing normal: each month vs its prior 12-month window.
+  const refYearMonthly = perMonthRefStats(zoneA, zoneB, yearY);
   drawMonthlyBars('sp-year-monthly', months, {
     lineArr: monthlyMarginalForYear(zoneA, zoneB, yearY),
+    ref: refYearMonthly,
   });
 
   // 24h profile averaged across the year
@@ -2440,10 +2538,16 @@ function renderSpYear() {
   const profile = avgProfile(displayed);
   const mpProfile = avgHourlyMarginalForDates(zoneA, zoneB, datesEff);
   const atcProfile = avgHourlyAtcForDates(zoneA, zoneB, datesEff);
+  // Per-hour trailing normal: last 365 days ending at year-end (capped today).
+  const todayYH = todayISO();
+  const yEndYH = `${yearY}-12-31`;
+  const endRefYH = yEndYH <= todayYH ? yEndYH : todayYH;
+  const refYearHourly = perHourRefStats(zoneA, zoneB, _isoRange(_isoShift(endRefYH, -364), endRefYH));
   drawHourBars('sp-year-hourly', profile, {
     ctx: `${pairLabel()} · ${yearY} · 24h avg`,
     lineArr: mpProfile,
     atcArr: atcProfile,
+    ref: refYearHourly,
   });
 
   const stats = aggregateStats(dayArrays);
@@ -2755,7 +2859,7 @@ function drawHourBars(svgId, arr, opts) {
   };
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
-    showRef: true,
+    ref: (opts && opts.ref) || null,
     xLabel: i => String(i + 1),
     xLabelEvery: 1,
     lineArr: hasLine ? lineArr : null,
@@ -2817,7 +2921,7 @@ function drawDailyBars(svgId, arr, isoDates, opts) {
   const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
-    showRef: true,
+    ref: opts.ref || null,
     xLabel: i => String(i + 1),
     xLabelEvery: arr.length > 20 ? 3 : 2,
     lineArr: hasLine ? lineArr : null,
@@ -2856,7 +2960,7 @@ function drawMonthlyBars(svgId, months, opts) {
   const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
-    showRef: true,
+    ref: opts.ref || null,
     xLabel: i => monthLabels[i] || '',
     xLabelEvery: 1,
     lineArr: hasLine ? lineArr : null,
@@ -2891,7 +2995,14 @@ function drawBarsAxis(svg, arr, opts) {
   // makes them visually comparable.
   const lineArr = opts.lineArr;
   const lineNumeric = (Array.isArray(lineArr) ? lineArr.filter(v => v != null) : []);
-  const valid = arr.filter(v => v != null).concat(lineNumeric);
+  const refNumeric = [];
+  if (opts.ref) {
+    for (const k of ['mean', 'lo', 'hi']) {
+      const a = opts.ref[k];
+      if (Array.isArray(a)) for (const v of a) if (v != null) refNumeric.push(v);
+    }
+  }
+  const valid = arr.filter(v => v != null).concat(lineNumeric, refNumeric);
   let yMin = Math.min(0, ...valid);
   let yMax = Math.max(0, ...valid);
   if (yMin === yMax) { yMin -= 1; yMax += 1; }
@@ -2919,36 +3030,49 @@ function drawBarsAxis(svg, arr, opts) {
        .text(v.toFixed(1));
   });
 
-  // Optional reference overlay: the selected period's own mean (dashed line)
-  // + its P25–P75 band, computed from the plotted bar values themselves.
-  // Gives a "is this point normal or deviating" sense without extra data.
-  // Drawn here (after grid, before bars) so it sits as a subtle backdrop.
-  if (opts.showRef) {
-    const vals = arr.filter(v => v != null).slice().sort((a, b) => a - b);
-    if (vals.length >= 3) {
-      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-      const pct = (p) => {
-        const idx = (vals.length - 1) * p;
-        const lo = Math.floor(idx), hi = Math.ceil(idx);
-        return lo === hi ? vals[lo] : vals[lo] + (vals[hi] - vals[lo]) * (idx - lo);
-      };
-      const yTop = yScale(pct(0.75)), yBot = yScale(pct(0.25));
-      svg.append('rect')
-         .attr('x', padL).attr('y', Math.min(yTop, yBot))
-         .attr('width', W - padL - padR).attr('height', Math.max(Math.abs(yBot - yTop), 0.5))
-         .attr('fill', '#5b6471').attr('opacity', 0.08).attr('pointer-events', 'none');
-      svg.append('line')
-         .attr('x1', padL).attr('x2', W - padR)
-         .attr('y1', yScale(mean)).attr('y2', yScale(mean))
+  // Position-matched reference overlay: trailing "normal" curve + P5–P95 band,
+  // aligned per x-position (per-hour / per-day / per-month). ref = {mean,lo,hi}
+  // arrays of the same length as `arr`. Mirrors the Generation view corridor —
+  // compares like with like, never a flat line against a varying series.
+  // Drawn after grid, before bars, so it reads as a subtle backdrop.
+  if (opts.ref && Array.isArray(opts.ref.mean)) {
+    const rf = opts.ref;
+    const nn = arr.length, stp = innerW / nn, xc = i => padL + stp * i + stp / 2;
+    // P5–P95 band as contiguous filled runs (handles gaps).
+    let run = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        let d = '';
+        run.forEach((i, k) => { d += (k === 0 ? 'M' : ' L') + xc(i).toFixed(1) + ' ' + yScale(rf.hi[i]).toFixed(1); });
+        for (let k = run.length - 1; k >= 0; k--) { const i = run[k]; d += ' L' + xc(i).toFixed(1) + ' ' + yScale(rf.lo[i]).toFixed(1); }
+        svg.append('path').attr('d', d + ' Z')
+           .attr('fill', '#5b6471').attr('opacity', 0.10).attr('pointer-events', 'none');
+      }
+      run = [];
+    };
+    for (let i = 0; i < nn; i++) {
+      if (rf.lo[i] != null && rf.hi[i] != null) run.push(i); else flush();
+    }
+    flush();
+    // Trailing-normal mean line (segmented across gaps).
+    let dM = '', drawn = false;
+    for (let i = 0; i < nn; i++) {
+      if (rf.mean[i] == null) { drawn = false; continue; }
+      dM += (drawn ? ' L' : ' M') + xc(i).toFixed(1) + ' ' + yScale(rf.mean[i]).toFixed(1);
+      drawn = true;
+    }
+    if (dM) {
+      svg.append('path').attr('d', dM).attr('fill', 'none')
          .attr('stroke', '#5b6471').attr('stroke-width', 1)
-         .attr('stroke-dasharray', '4 3').attr('opacity', 0.7)
-         .attr('pointer-events', 'none');
-      svg.append('text')
-         .attr('x', W - padR - 2).attr('y', yScale(mean) - 3)
-         .attr('text-anchor', 'end').attr('font-size', 9)
-         .attr('fill', '#5b6471').attr('opacity', 0.9)
-         .attr('pointer-events', 'none')
-         .text(`avg ${mean.toFixed(0)} · P25–75`);
+         .attr('stroke-dasharray', '4 3').attr('opacity', 0.75).attr('pointer-events', 'none');
+      let lastI = -1; for (let i = nn - 1; i >= 0; i--) { if (rf.mean[i] != null) { lastI = i; break; } }
+      if (lastI >= 0) {
+        svg.append('text')
+           .attr('x', W - padR - 2).attr('y', yScale(rf.mean[lastI]) - 3)
+           .attr('text-anchor', 'end').attr('font-size', 9)
+           .attr('fill', '#5b6471').attr('opacity', 0.9).attr('pointer-events', 'none')
+           .text('trailing normal · P5–95');
+      }
     }
   }
 
