@@ -242,8 +242,11 @@ async function loadRealData() {
     console.warn('border_hourly.json load failed (non-fatal):', e);
   }
 
-  // Reshape: { zone -> [ {date, mean, peak, offpeak, tb2, tb4, pv, wind} ] }
-  // Schema v4: rows are { z, d, m, p, o, t2, t4, wp, sl }   (PV/Wind capture added)
+  // Reshape: { zone -> [ {date, mean, peak, offpeak, tb2, tb4, pv, wind,
+  //                       pvVol, windVol} ] }
+  // Schema v5: adds wv/sv — daily MWh volume for true volume-weighted
+  //            period capture aggregation.
+  // Schema v4: rows are { z, d, m, p, o, t2, t4, wp, sl }   (PV/Wind capture)
   // Schema v3: rows are { z, d, m, p, o, t2, t4 }
   // Schema v2: rows are { z, d, m, p, o } (TB2/TB4 unavailable)
   // Schema v1: { zone, date, mean_eur, peak_eur, offpeak_eur }
@@ -258,6 +261,8 @@ async function loadRealData() {
   const fTb4  = sv >= 3 ? 't4' : null;
   const fWind = sv >= 4 ? 'wp' : null;
   const fPv   = sv >= 4 ? 'sl' : null;
+  const fWv   = sv >= 5 ? 'wv' : null;
+  const fSv   = sv >= 5 ? 'sv' : null;
   const map = new Map();
   for (const r of daily.rows) {
     const z = r[fZone];
@@ -271,6 +276,8 @@ async function loadRealData() {
       tb4: fTb4 ? r[fTb4] : null,
       wind: fWind ? r[fWind] : null,
       pv: fPv ? r[fPv] : null,
+      windVol: fWv ? r[fWv] : null,
+      pvVol:   fSv ? r[fSv] : null,
     });
   }
   state.data = map;
@@ -594,6 +601,10 @@ function getZonePrice(zoneCode, mode, profile) {
     slice = series.filter(r => r.date >= state.rangeFrom && r.date <= state.rangeTo);
   }
   if (!slice || slice.length === 0) return null;
+  // For PV/Wind, period aggregation must be volume-weighted, not arithmetic.
+  if (profile === 'pv' || profile === 'wind') {
+    return weightedCapturePrice(slice, profile);
+  }
   return avgField(slice, field);
 }
 
@@ -623,7 +634,33 @@ function averageWindow(zoneCode, mode, profile, refDateISO) {
     });
   }
   if (!slice || slice.length === 0) return null;
+  // Volume-weighted aggregate for PV / Wind, arithmetic mean otherwise.
+  if (profile === 'pv' || profile === 'wind') {
+    return weightedCapturePrice(slice, profile);
+  }
   return avgField(slice, field);
+}
+
+// True volume-weighted period capture for PV / Wind.
+//   period_capture = SUM(daily_capture × daily_volume) / SUM(daily_volume)
+// Each day's `pv` / `wind` is already volume-weighted INSIDE that day (24h
+// hourly weights); here we weight days against each other by their actual
+// MWh produced, so high-production days dominate as they should.
+// Returns null if no day has a usable (capture, volume>0) pair.
+function weightedCapturePrice(slice, profile) {
+  if (profile !== 'pv' && profile !== 'wind') return null;
+  const capField = profile;                              // 'pv' or 'wind'
+  const volField = profile === 'pv' ? 'pvVol' : 'windVol';
+  let num = 0, den = 0;
+  for (const r of slice) {
+    const v = r[volField];
+    const p = r[capField];
+    if (v != null && v > 0 && p != null) {
+      num += p * v;
+      den += v;
+    }
+  }
+  return den > 0 ? round2(num / den) : null;
 }
 
 // Average of a series field, skipping nulls.
@@ -3675,7 +3712,11 @@ function pdAggregate(zone, product, year, monthFrom, monthTo) {
   const rows = series.filter(r => r.date >= fromISO && r.date <= toISO);
   if (rows.length === 0) return null;
   const field = pdProductField(product);
-  const value = pdMeanField(rows, field);
+  // PV/Wind → volume-weighted period capture (SUM(p·v) / SUM(v)).
+  // Everything else → arithmetic mean of daily values.
+  const value = (product === 'pv' || product === 'wind')
+    ? weightedCapturePrice(rows, product)
+    : pdMeanField(rows, field);
   const baseload = pdMeanField(rows, 'mean');
   if (value == null && baseload == null) return null;
   // % computation
