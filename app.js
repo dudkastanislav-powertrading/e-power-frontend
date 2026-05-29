@@ -2755,6 +2755,7 @@ function drawHourBars(svgId, arr, opts) {
   };
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
+    showRef: true,
     xLabel: i => String(i + 1),
     xLabelEvery: 1,
     lineArr: hasLine ? lineArr : null,
@@ -2816,6 +2817,7 @@ function drawDailyBars(svgId, arr, isoDates, opts) {
   const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
+    showRef: true,
     xLabel: i => String(i + 1),
     xLabelEvery: arr.length > 20 ? 3 : 2,
     lineArr: hasLine ? lineArr : null,
@@ -2854,6 +2856,7 @@ function drawMonthlyBars(svgId, months, opts) {
   const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
   drawBarsAxis(svg, arr, {
     W, H, padL, padR, padT, padB,
+    showRef: true,
     xLabel: i => monthLabels[i] || '',
     xLabelEvery: 1,
     lineArr: hasLine ? lineArr : null,
@@ -2915,6 +2918,39 @@ function drawBarsAxis(svg, arr, opts) {
        .attr('text-anchor', 'end')
        .text(v.toFixed(1));
   });
+
+  // Optional reference overlay: the selected period's own mean (dashed line)
+  // + its P25–P75 band, computed from the plotted bar values themselves.
+  // Gives a "is this point normal or deviating" sense without extra data.
+  // Drawn here (after grid, before bars) so it sits as a subtle backdrop.
+  if (opts.showRef) {
+    const vals = arr.filter(v => v != null).slice().sort((a, b) => a - b);
+    if (vals.length >= 3) {
+      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+      const pct = (p) => {
+        const idx = (vals.length - 1) * p;
+        const lo = Math.floor(idx), hi = Math.ceil(idx);
+        return lo === hi ? vals[lo] : vals[lo] + (vals[hi] - vals[lo]) * (idx - lo);
+      };
+      const yTop = yScale(pct(0.75)), yBot = yScale(pct(0.25));
+      svg.append('rect')
+         .attr('x', padL).attr('y', Math.min(yTop, yBot))
+         .attr('width', W - padL - padR).attr('height', Math.max(Math.abs(yBot - yTop), 0.5))
+         .attr('fill', '#5b6471').attr('opacity', 0.08).attr('pointer-events', 'none');
+      svg.append('line')
+         .attr('x1', padL).attr('x2', W - padR)
+         .attr('y1', yScale(mean)).attr('y2', yScale(mean))
+         .attr('stroke', '#5b6471').attr('stroke-width', 1)
+         .attr('stroke-dasharray', '4 3').attr('opacity', 0.7)
+         .attr('pointer-events', 'none');
+      svg.append('text')
+         .attr('x', W - padR - 2).attr('y', yScale(mean) - 3)
+         .attr('text-anchor', 'end').attr('font-size', 9)
+         .attr('fill', '#5b6471').attr('opacity', 0.9)
+         .attr('pointer-events', 'none')
+         .text(`avg ${mean.toFixed(0)} · P25–75`);
+    }
+  }
 
   // Column-background rects (whole-column hover target). Drawn UNDER bars so
   // they highlight on hover but never steal pointer events from the bar
