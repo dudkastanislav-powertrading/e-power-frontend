@@ -28,4 +28,12 @@ C. Side-stats panel: Theoretical / Effective (ATC>0) / Lost potential
    €/MWh-equiv' when N>0. Non-JAO borders display 'n/a — no ATC data',
    Lost = 0.00 €.
 
-D. Cache-buster: app.js?v=24 → v=25.
+D. Cache-buster: app.js?v=24 → v=26.
+
+E. Chart axis unification — JAO marginal line moved off the orange
+   right-side scale onto the same left y-axis as the spread bars.
+   drawBarsAxis now sweeps yMin/yMax across BOTH arr and lineArr so
+   the line never clips. padR back to 10 unconditionally, right-side
+   orange ticks dropped. €/MW and €/MWh share one scale on purpose —
+   visually comparable for DA auctions. Legend still labels the line
+   'JAO marginal €/MW' so the unit difference stays explicit.

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RedKlen — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=25" />
+  <link rel="stylesheet" href="style.css?v=26" />
 </head>
 <body>
   <header class="topbar">
@@ -18,6 +18,7 @@
       <a class="nav-link active" data-view="dam-map">Day-Ahead Map</a>
       <a class="nav-link" data-view="dam-spreads">Market Spreads</a>
       <a class="nav-link" data-view="generation">Actual Generation</a>
+      <a class="nav-link" data-view="product-dynamics">Product Dynamics</a>
       <a class="nav-link" data-view="futures">Futures</a>
     </nav>
     <div class="topbar-meta">
@@ -358,6 +359,91 @@
       </div>
 
       <div class="sp-tooltip" id="gen-tooltip" aria-hidden="true"></div>
+    </section>
+
+    <!-- =================================================== -->
+    <!-- Product Dynamics view                                 -->
+    <!-- =================================================== -->
+    <section class="dynamics-panel hidden" id="dynamics-view">
+      <div class="pd-toolbar">
+        <div class="sp-ctrl">
+          <label for="pd-zone">Zone</label>
+          <select id="pd-zone"></select>
+        </div>
+        <div class="sp-ctrl">
+          <label for="pd-product">Product</label>
+          <select id="pd-product">
+            <option value="peak">Peak</option>
+            <option value="offpeak">Off-peak</option>
+            <option value="tb2">TB2 spread</option>
+            <option value="tb4">TB4 spread</option>
+            <option value="pv">PV capture</option>
+            <option value="wind">Wind capture</option>
+          </select>
+        </div>
+        <div class="sp-ctrl">
+          <label>Unit</label>
+          <div class="seg-toggle" role="group" aria-label="Unit">
+            <button type="button" class="seg-btn active" data-pd-unit="pct"
+                    title="(X − baseload) / baseload × 100. TB-products: X / baseload × 100.">% vs baseload</button>
+            <button type="button" class="seg-btn" data-pd-unit="eur"
+                    title="Raw values in EUR/MWh">EUR/MWh</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pd-status" id="pd-status">Loading…</div>
+
+      <!-- Monthly -->
+      <div class="pd-block" id="pd-block-monthly">
+        <h3 class="pd-block-title" id="pd-title-monthly">Monthly — Peak vs baseload</h3>
+        <div class="pd-split">
+          <aside class="pd-table-wrap"><table class="pd-table" id="pd-table-monthly"></table></aside>
+          <div class="pd-chart-wrap">
+            <div class="pd-chart-legend" id="pd-legend-monthly"></div>
+            <svg id="pd-chart-monthly"></svg>
+          </div>
+        </div>
+        <div class="pd-summary" id="pd-summary-monthly">—</div>
+      </div>
+
+      <!-- Quarterly -->
+      <div class="pd-block" id="pd-block-quarterly">
+        <h3 class="pd-block-title" id="pd-title-quarterly">Quarterly — Peak vs baseload</h3>
+        <div class="pd-split">
+          <aside class="pd-table-wrap"><table class="pd-table" id="pd-table-quarterly"></table></aside>
+          <div class="pd-chart-wrap">
+            <div class="pd-chart-legend" id="pd-legend-quarterly"></div>
+            <svg id="pd-chart-quarterly"></svg>
+          </div>
+        </div>
+        <div class="pd-summary" id="pd-summary-quarterly">—</div>
+      </div>
+
+      <!-- Yearly -->
+      <div class="pd-block" id="pd-block-yearly">
+        <h3 class="pd-block-title" id="pd-title-yearly">Yearly — Peak vs baseload</h3>
+        <div class="pd-split">
+          <aside class="pd-table-wrap"><table class="pd-table" id="pd-table-yearly"></table></aside>
+          <div class="pd-chart-wrap">
+            <div class="pd-chart-legend" id="pd-legend-yearly"></div>
+            <svg id="pd-chart-yearly"></svg>
+          </div>
+        </div>
+        <div class="pd-summary" id="pd-summary-yearly">—</div>
+      </div>
+
+      <div class="pd-methodology">
+        Methodology: monthly / quarterly / yearly values = arithmetic mean of daily samples in that period.
+        Percent formula = <code>(X − Baseload) / Baseload × 100</code> for Peak / Off-peak / PV / Wind;
+        <code>TB / Baseload × 100</code> for TB2 / TB4 (spread products express as fraction of price level).
+        Yearly trend line = ordinary least squares on annual averages; R² shown in summary.
+        Trend tagging: <strong>strong</strong> when R² ≥ 0.70, <strong>moderate</strong> when 0.40 ≤ R² &lt; 0.70,
+        <strong>no clear trend</strong> when R² &lt; 0.40 or slope below the noise floor.
+        Current-year cell highlighted in amber; current-year data is partial.
+      </div>
+
+      <div class="sp-tooltip" id="pd-tooltip" aria-hidden="true"></div>
     </section>
   </main>
 

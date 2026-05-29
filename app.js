@@ -176,6 +176,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (genVisible && state.gen && state.gen.isInit) {
         try { renderGen(); } catch (e) { console.warn(e); }
       }
+      const pdPanel2 = document.getElementById('dynamics-view');
+      const pdVisible = pdPanel2 && !pdPanel2.classList.contains('hidden');
+      if (pdVisible && state.pd && state.pd.isInit) {
+        try { renderDynamics(); } catch (e) { console.warn(e); }
+      }
     }, 200);
   });
 });
@@ -1589,6 +1594,7 @@ async function showView(view) {
   const isMap = view === 'dam-map';
   const isSpreads = view === 'dam-spreads';
   const isGen = view === 'generation';
+  const isPD = view === 'product-dynamics';
 
   document.querySelector('.map-panel').classList.toggle('hidden', !isMap);
   document.querySelector('.table-panel').classList.toggle('hidden', !isMap);
@@ -1599,6 +1605,8 @@ async function showView(view) {
   document.getElementById('spreads-view').classList.toggle('hidden', !isSpreads);
   const genPanel = document.getElementById('generation-view');
   if (genPanel) genPanel.classList.toggle('hidden', !isGen);
+  const pdPanel = document.getElementById('dynamics-view');
+  if (pdPanel) pdPanel.classList.toggle('hidden', !isPD);
 
   if (isSpreads) {
     await initSpreadsView();
@@ -1607,6 +1615,10 @@ async function showView(view) {
   if (isGen) {
     await initGenView();
     renderGen();
+  }
+  if (isPD) {
+    await initDynamicsView();
+    renderDynamics();
   }
 }
 
@@ -3530,4 +3542,780 @@ function drawGenLineChart(svgId, points, opts) {
       .on('mousemove',  (evt) => { showTooltip(i, evt); })
       .on('mouseleave', () => { clearHot(); hideTooltip(); });
   }
+}
+
+// =============================================================
+// =============================================================
+// PRODUCT DYNAMICS TAB
+// Per-zone trend explorer for Peak / Off-peak / TB2 / TB4 /
+// PV capture / Wind capture across multiple time horizons,
+// expressed as % of baseload (default) or absolute EUR/MWh.
+// =============================================================
+// =============================================================
+
+state.pd = {
+  isInit: false,
+  zone: 'HU',
+  product: 'peak',     // peak | offpeak | tb2 | tb4 | pv | wind
+  unit: 'pct',         // pct | eur
+};
+
+// Friendly product names — match the option labels in #pd-product.
+const PD_PRODUCT_LABELS = {
+  peak: 'Peak', offpeak: 'Off-peak',
+  tb2: 'TB2 spread', tb4: 'TB4 spread',
+  pv: 'PV capture', wind: 'Wind capture',
+};
+
+// Year color palette: older years stay grey, recent year emphasised blue,
+// current year amber. Chronological darkening within the grey ramp.
+function pdYearColor(year, currentYear) {
+  if (year === currentYear) return '#BA7517';   // amber
+  if (year === currentYear - 1) return '#378ADD';  // blue
+  // Map prior years to grey ramp; older = lighter.
+  const ageBack = currentYear - 1 - year;       // 1..N
+  const palette = ['#5F5E5A', '#888780', '#B4B2A9', '#D3D1C7', '#E0DED7'];
+  return palette[Math.min(ageBack - 1, palette.length - 1)] || '#D3D1C7';
+}
+
+// ----- Init -------------------------------------------------
+async function initDynamicsView() {
+  if (state.pd.isInit) return;
+  populatePdZoneSelect();
+  bindPdControls();
+  state.pd.isInit = true;
+  if (!state.data) setPdStatus('Waiting for daily DAM dataset…', 'error');
+  else hidePdStatus();
+}
+
+function populatePdZoneSelect() {
+  const sel = document.getElementById('pd-zone');
+  sel.innerHTML = '';
+  for (const z of ZONES.slice().sort((a, b) => a.code.localeCompare(b.code))) {
+    const opt = document.createElement('option');
+    opt.value = z.code;
+    opt.textContent = `${z.code} — ${z.name}`;
+    sel.appendChild(opt);
+  }
+  sel.value = state.pd.zone;
+}
+
+function bindPdControls() {
+  document.getElementById('pd-zone').addEventListener('change', (e) => {
+    state.pd.zone = e.target.value;
+    renderDynamics();
+  });
+  document.getElementById('pd-product').addEventListener('change', (e) => {
+    state.pd.product = e.target.value;
+    renderDynamics();
+  });
+  document.querySelectorAll('[data-pd-unit]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-pd-unit]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.pd.unit = btn.dataset.pdUnit;
+      renderDynamics();
+    });
+  });
+}
+
+function setPdStatus(msg, level) {
+  const el = document.getElementById('pd-status');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  el.classList.toggle('error', level === 'error');
+}
+function hidePdStatus() {
+  document.getElementById('pd-status').classList.add('hidden');
+}
+
+// ----- Aggregations -----------------------------------------
+// productField maps UI key → dam_daily.json reshaped key
+function pdProductField(p) {
+  return ({ peak:'peak', offpeak:'offpeak', tb2:'tb2', tb4:'tb4', pv:'pv', wind:'wind' })[p] || 'mean';
+}
+// Spread-class products are expressed as ratio of baseload, not delta.
+function pdIsSpreadProduct(p) {
+  return p === 'tb2' || p === 'tb4';
+}
+
+// Mean of a numeric field across rows; falls back to mean for peak/offpeak.
+function pdMeanField(rows, field) {
+  let s = 0, n = 0;
+  for (const r of rows) {
+    if (r[field] != null) { s += r[field]; n++; }
+  }
+  if (n > 0) return s / n;
+  if (field === 'peak' || field === 'offpeak') {
+    let sm = 0, nm = 0;
+    for (const r of rows) if (r.mean != null) { sm += r.mean; nm++; }
+    return nm > 0 ? sm / nm : null;
+  }
+  return null;
+}
+
+// Returns {value, baseload, pct, rowsUsed} for the given (zone, product,
+// inclusive date range MM/DD bounds within year).
+function pdAggregate(zone, product, year, monthFrom, monthTo) {
+  const series = state.data && state.data.get(zone);
+  if (!series) return null;
+  const fromISO = `${year}-${String(monthFrom).padStart(2, '0')}-01`;
+  const lastDay = new Date(Date.UTC(year, monthTo, 0)).getUTCDate();
+  const toISO = `${year}-${String(monthTo).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  const rows = series.filter(r => r.date >= fromISO && r.date <= toISO);
+  if (rows.length === 0) return null;
+  const field = pdProductField(product);
+  const value = pdMeanField(rows, field);
+  const baseload = pdMeanField(rows, 'mean');
+  if (value == null && baseload == null) return null;
+  // % computation
+  let pct = null;
+  if (baseload != null && baseload !== 0 && value != null) {
+    pct = pdIsSpreadProduct(product)
+        ? (value / Math.abs(baseload)) * 100
+        : ((value - baseload) / Math.abs(baseload)) * 100;
+  }
+  return { value, baseload, pct, days: rows.length };
+}
+
+// Available years in state.data, sorted ascending.
+function pdAvailableYears() {
+  if (!state.data) return [];
+  const ys = new Set();
+  for (const arr of state.data.values()) {
+    for (const r of arr) ys.add(parseInt(r.date.slice(0, 4), 10));
+  }
+  return [...ys].sort((a, b) => a - b);
+}
+
+// ----- Render entry -----------------------------------------
+function renderDynamics() {
+  if (!state.pd.isInit) return;
+  if (!state.data) { setPdStatus('Daily dataset not loaded.', 'error'); return; }
+  hidePdStatus();
+  const { zone, product, unit } = state.pd;
+  const unitLabel = unit === 'pct' ? '% vs baseload' : 'EUR/MWh';
+  const productLabel = PD_PRODUCT_LABELS[product] || product;
+  document.getElementById('pd-title-monthly').textContent =
+    `Monthly — ${productLabel} · ${zone} · ${unitLabel}`;
+  document.getElementById('pd-title-quarterly').textContent =
+    `Quarterly — ${productLabel} · ${zone} · ${unitLabel}`;
+  document.getElementById('pd-title-yearly').textContent =
+    `Yearly — ${productLabel} · ${zone} · ${unitLabel}`;
+
+  const years = pdAvailableYears();
+  const currentYear = new Date().getUTCFullYear();
+  // Keep last 5 years + current = up to 6 columns
+  const yearsShown = years.slice(-6);
+
+  renderPdMonthly(yearsShown, currentYear);
+  renderPdQuarterly(yearsShown, currentYear);
+  renderPdYearly(yearsShown, currentYear);
+}
+
+// ----- Monthly section --------------------------------------
+function renderPdMonthly(years, currentYear) {
+  const { zone, product, unit } = state.pd;
+  // 12 months × N years → values
+  const matrix = years.map(y => {
+    const cells = [];
+    for (let m = 1; m <= 12; m++) {
+      const agg = pdAggregate(zone, product, y, m, m);
+      cells.push(agg);
+    }
+    return { year: y, cells };
+  });
+
+  // Build table: rows = months (Jan..Dec) + Avg, cols = year
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const tbl = document.getElementById('pd-table-monthly');
+  let thead = '<thead><tr><th>Mo</th>';
+  for (const y of years) thead += `<th>${String(y).slice(2)}</th>`;
+  thead += '</tr></thead>';
+  let tbody = '<tbody>';
+  for (let m = 0; m < 12; m++) {
+    tbody += `<tr><td>${monthLabels[m]}</td>`;
+    for (let yi = 0; yi < years.length; yi++) {
+      const cell = matrix[yi].cells[m];
+      const isCur = years[yi] === currentYear;
+      tbody += `<td class="${isCur ? 'pd-cur ' : ''}${cell == null ? 'pd-na' : ''}">${pdFmtCell(cell, unit)}</td>`;
+    }
+    tbody += '</tr>';
+  }
+  // Avg row
+  tbody += '<tr class="pd-avg"><td>Avg</td>';
+  for (let yi = 0; yi < years.length; yi++) {
+    const valid = matrix[yi].cells.filter(c => c != null);
+    let avg = null;
+    if (valid.length) {
+      const key = unit === 'pct' ? 'pct' : 'value';
+      const arr = valid.map(c => c[key]).filter(v => v != null);
+      if (arr.length) avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+    }
+    tbody += `<td>${avg == null ? '—' : pdFmtVal(avg, unit)}</td>`;
+  }
+  tbody += '</tr></tbody>';
+  tbl.innerHTML = thead + tbody;
+
+  // Chart: x = 1..12, one curve per year
+  const seriesData = matrix.map(({ year, cells }) => ({
+    year,
+    points: cells.map((c, i) => ({ x: i + 1, label: monthLabels[i],
+      v: c == null ? null : (unit === 'pct' ? c.pct : c.value),
+    })),
+  }));
+  drawPdMultiYearChart('pd-chart-monthly', 'pd-legend-monthly', seriesData,
+    monthLabels, currentYear, 1);
+
+  document.getElementById('pd-summary-monthly').innerHTML =
+    pdSummaryMonthly(matrix, years, currentYear, unit);
+}
+
+// ----- Quarterly section ------------------------------------
+function renderPdQuarterly(years, currentYear) {
+  const { zone, product, unit } = state.pd;
+  // 4 quarters × N years
+  const QUARTER_MONTHS = [[1,3],[4,6],[7,9],[10,12]];
+  const matrix = years.map(y => ({
+    year: y,
+    cells: QUARTER_MONTHS.map(([mFrom, mTo]) => pdAggregate(zone, product, y, mFrom, mTo)),
+  }));
+  const tbl = document.getElementById('pd-table-quarterly');
+  let thead = '<thead><tr><th>Q</th>';
+  for (const y of years) thead += `<th>${String(y).slice(2)}</th>`;
+  thead += '</tr></thead>';
+  let tbody = '<tbody>';
+  for (let q = 0; q < 4; q++) {
+    tbody += `<tr><td>Q${q+1}</td>`;
+    for (let yi = 0; yi < years.length; yi++) {
+      const cell = matrix[yi].cells[q];
+      const isCur = years[yi] === currentYear;
+      tbody += `<td class="${isCur ? 'pd-cur ' : ''}${cell == null ? 'pd-na' : ''}">${pdFmtCell(cell, unit)}</td>`;
+    }
+    tbody += '</tr>';
+  }
+  tbody += '<tr class="pd-avg"><td>Avg</td>';
+  for (let yi = 0; yi < years.length; yi++) {
+    const valid = matrix[yi].cells.filter(c => c != null);
+    let avg = null;
+    if (valid.length) {
+      const key = unit === 'pct' ? 'pct' : 'value';
+      const arr = valid.map(c => c[key]).filter(v => v != null);
+      if (arr.length) avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+    }
+    tbody += `<td>${avg == null ? '—' : pdFmtVal(avg, unit)}</td>`;
+  }
+  tbody += '</tr></tbody>';
+  tbl.innerHTML = thead + tbody;
+
+  const qLabels = ['Q1','Q2','Q3','Q4'];
+  const seriesData = matrix.map(({ year, cells }) => ({
+    year,
+    points: cells.map((c, i) => ({ x: i + 1, label: qLabels[i],
+      v: c == null ? null : (unit === 'pct' ? c.pct : c.value),
+    })),
+  }));
+  drawPdMultiYearChart('pd-chart-quarterly', 'pd-legend-quarterly', seriesData,
+    qLabels, currentYear, 1);
+
+  document.getElementById('pd-summary-quarterly').innerHTML =
+    pdSummaryQuarterly(matrix, years, currentYear, unit);
+}
+
+// ----- Yearly section ---------------------------------------
+function renderPdYearly(years, currentYear) {
+  const { zone, product, unit } = state.pd;
+  const cells = years.map(y => pdAggregate(zone, product, y, 1, 12));
+
+  // Table: Year | Value | YoY | Days
+  let tbody = '<tbody>';
+  for (let i = 0; i < years.length; i++) {
+    const cur = cells[i];
+    const prev = i > 0 ? cells[i - 1] : null;
+    const isCur = years[i] === currentYear;
+    const valFmt = cur == null ? '—' : pdFmtVal(unit === 'pct' ? cur.pct : cur.value, unit);
+    let yoyFmt = '—';
+    if (cur != null && prev != null) {
+      const k = unit === 'pct' ? 'pct' : 'value';
+      if (cur[k] != null && prev[k] != null) {
+        const d = cur[k] - prev[k];
+        yoyFmt = (d >= 0 ? '+' : '') + pdFmtVal(d, unit);
+      }
+    }
+    const days = cur ? cur.days : 0;
+    tbody += `<tr><td>${years[i]}</td>` +
+             `<td class="${isCur ? 'pd-cur' : ''}">${valFmt}</td>` +
+             `<td>${yoyFmt}</td>` +
+             `<td>${days}${isCur ? ' ytd' : ''}</td></tr>`;
+  }
+  tbody += '</tbody>';
+  document.getElementById('pd-table-yearly').innerHTML =
+    '<thead><tr><th>Year</th><th>Value</th><th>YoY</th><th>Days</th></tr></thead>' + tbody;
+
+  // Chart: single curve with linear regression trend
+  const pts = years.map((y, i) => {
+    const c = cells[i];
+    return { x: i + 1, label: String(y), year: y,
+      v: c == null ? null : (unit === 'pct' ? c.pct : c.value),
+    };
+  });
+  const validPts = pts.filter(p => p.v != null);
+  const regression = pdLinearRegression(validPts.map(p => p.x), validPts.map(p => p.v));
+  drawPdYearlyChart('pd-chart-yearly', 'pd-legend-yearly', pts, regression, currentYear);
+
+  document.getElementById('pd-summary-yearly').innerHTML =
+    pdSummaryYearly(cells, years, currentYear, unit, regression);
+}
+
+// ----- Formatting helpers -----------------------------------
+function pdFmtCell(cell, unit) {
+  if (cell == null) return '—';
+  const v = unit === 'pct' ? cell.pct : cell.value;
+  return v == null ? '—' : pdFmtVal(v, unit);
+}
+function pdFmtVal(v, unit) {
+  if (v == null) return '—';
+  if (unit === 'pct') {
+    const sign = v > 0 ? '+' : '';
+    return `${sign}${v.toFixed(1)}%`;
+  }
+  return v.toFixed(1);
+}
+
+// ----- Linear regression ------------------------------------
+function pdLinearRegression(xs, ys) {
+  const n = xs.length;
+  if (n < 2) return { slope: null, intercept: null, r2: null, n };
+  const xMean = xs.reduce((a, b) => a + b, 0) / n;
+  const yMean = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - xMean) * (ys[i] - yMean);
+    den += (xs[i] - xMean) ** 2;
+  }
+  if (den === 0) return { slope: 0, intercept: yMean, r2: 0, n };
+  const slope = num / den;
+  const intercept = yMean - slope * xMean;
+  let ssRes = 0, ssTot = 0;
+  for (let i = 0; i < n; i++) {
+    const yi = intercept + slope * xs[i];
+    ssRes += (ys[i] - yi) ** 2;
+    ssTot += (ys[i] - yMean) ** 2;
+  }
+  const r2 = ssTot === 0 ? 1 : 1 - ssRes / ssTot;
+  return { slope, intercept, r2, n };
+}
+
+// ----- Auto-generated summaries -----------------------------
+function pdTrendTag(r2, slope, unit) {
+  if (slope == null || r2 == null) return { tag: 'flat', text: 'no clear trend' };
+  // Noise floor: for % unit, slope < 0.3 pp/yr is noise; for EUR ~1 EUR/yr
+  const noiseFloor = unit === 'pct' ? 0.3 : 1.0;
+  if (Math.abs(slope) < noiseFloor || r2 < 0.40) return { tag: 'flat', text: 'no clear trend' };
+  if (r2 >= 0.70) return { tag: 'strong', text: slope > 0 ? 'strong upward' : 'strong downward' };
+  return { tag: '', text: slope > 0 ? 'moderate upward' : 'moderate downward' };
+}
+
+function pdSummaryMonthly(matrix, years, currentYear, unit) {
+  // Compute annual averages over 12 months
+  const annual = matrix.map(({ year, cells }) => {
+    const arr = cells.map(c => c == null ? null : (unit === 'pct' ? c.pct : c.value))
+                     .filter(v => v != null);
+    return { year, avg: arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null };
+  }).filter(a => a.avg != null);
+  if (annual.length < 2) return `<span class="pd-tag flat">N/A</span>Insufficient history to assess monthly trend.`;
+  const xs = annual.map(a => a.year);
+  const ys = annual.map(a => a.avg);
+  const reg = pdLinearRegression(xs, ys);
+  const trend = pdTrendTag(reg.r2, reg.slope, unit);
+
+  const first = annual[0], last = annual[annual.length - 1];
+  const deltaTxt = pdFmtVal(last.avg - first.avg, unit);
+  const u = unit === 'pct' ? '%' : ' €';
+
+  // Find which months expanded/compressed most
+  let bestMonth = null, bestDelta = -Infinity, worstMonth = null, worstDelta = Infinity;
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  if (matrix.length >= 2) {
+    const firstM = matrix.find(m => m.year === first.year);
+    const lastM  = matrix.find(m => m.year === last.year);
+    if (firstM && lastM) {
+      for (let m = 0; m < 12; m++) {
+        const f = firstM.cells[m], l = lastM.cells[m];
+        if (f && l) {
+          const k = unit === 'pct' ? 'pct' : 'value';
+          if (f[k] != null && l[k] != null) {
+            const d = l[k] - f[k];
+            if (d > bestDelta)  { bestDelta = d;  bestMonth = monthLabels[m]; }
+            if (d < worstDelta) { worstDelta = d; worstMonth = monthLabels[m]; }
+          }
+        }
+      }
+    }
+  }
+
+  if (trend.tag === 'flat') {
+    return `<span class="pd-tag flat">No trend</span>` +
+           `Annual averages stayed within ${pdFmtVal(Math.max(...ys) - Math.min(...ys), unit)} range over ${annual.length} years (R²=${reg.r2 == null ? '—' : reg.r2.toFixed(2)}). ` +
+           `No systematic monthly directional pattern detected.`;
+  }
+  return `<span class="pd-tag ${trend.tag}">${trend.text}</span>` +
+         `<strong>Annual mean shifted ${deltaTxt} over ${last.year - first.year} years</strong> (slope ${pdFmtVal(reg.slope, unit)}/yr, R²=${reg.r2.toFixed(2)}). ` +
+         (bestMonth ? `Largest expansion: <strong>${bestMonth}</strong> (${pdFmtVal(bestDelta, unit)}). ` : '') +
+         (worstMonth && worstMonth !== bestMonth ? `Largest compression: <strong>${worstMonth}</strong> (${pdFmtVal(worstDelta, unit)}). ` : '') +
+         `Idea: the seasonal months with biggest expansion are where forward premium has most repriced — those carry the most directional information for Cal-front hedging.`;
+}
+
+function pdSummaryQuarterly(matrix, years, currentYear, unit) {
+  // Annual averages from quarters
+  const annual = matrix.map(({ year, cells }) => {
+    const arr = cells.map(c => c == null ? null : (unit === 'pct' ? c.pct : c.value))
+                     .filter(v => v != null);
+    return { year, avg: arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null };
+  }).filter(a => a.avg != null);
+  if (annual.length < 2) return `<span class="pd-tag flat">N/A</span>Insufficient history.`;
+  const xs = annual.map(a => a.year);
+  const ys = annual.map(a => a.avg);
+  const reg = pdLinearRegression(xs, ys);
+  const trend = pdTrendTag(reg.r2, reg.slope, unit);
+
+  // Per-quarter regression — find which quarters carry the trend
+  const qDeltas = [];
+  for (let q = 0; q < 4; q++) {
+    const pts = matrix.map(({ year, cells }) => {
+      const c = cells[q];
+      const v = c == null ? null : (unit === 'pct' ? c.pct : c.value);
+      return { year, v };
+    }).filter(p => p.v != null);
+    if (pts.length >= 2) {
+      const r = pdLinearRegression(pts.map(p => p.year), pts.map(p => p.v));
+      qDeltas.push({ q: q + 1, slope: r.slope, r2: r.r2, n: pts.length });
+    }
+  }
+  qDeltas.sort((a, b) => b.slope - a.slope);
+  const topQ = qDeltas[0], botQ = qDeltas[qDeltas.length - 1];
+
+  if (trend.tag === 'flat' && (!topQ || Math.abs(topQ.slope - botQ.slope) < (unit === 'pct' ? 0.5 : 2))) {
+    return `<span class="pd-tag flat">No trend</span>` +
+           `Quarterly averages mostly mean-revert (R²=${reg.r2 == null ? '—' : reg.r2.toFixed(2)}). ` +
+           `No structurally diverging seasonal pattern detected.`;
+  }
+  const direction = trend.tag === 'flat' ? 'mixed' : trend.text;
+  return `<span class="pd-tag ${trend.tag || ''}">${direction}</span>` +
+         (topQ && botQ && topQ !== botQ
+           ? `<strong>Q${topQ.q}</strong> trending strongest (slope ${pdFmtVal(topQ.slope, unit)}/yr, R²=${topQ.r2.toFixed(2)}); ` +
+             `<strong>Q${botQ.q}</strong> weakest (slope ${pdFmtVal(botQ.slope, unit)}/yr). `
+           : ``) +
+         (topQ && botQ && topQ.q !== botQ.q
+           ? `Idea: a long Q${topQ.q} / short Q${botQ.q} calendar spread captures the divergence if it persists. Re-validate against forward curve before sizing.`
+           : ``);
+}
+
+function pdSummaryYearly(cells, years, currentYear, unit, regression) {
+  const valid = cells.map((c, i) => ({ y: years[i], v: c == null ? null : (unit === 'pct' ? c.pct : c.value) }))
+                     .filter(p => p.v != null);
+  if (valid.length < 3) return `<span class="pd-tag flat">N/A</span>Need at least 3 years for a yearly trend.`;
+  const trend = pdTrendTag(regression.r2, regression.slope, unit);
+  const first = valid[0], last = valid[valid.length - 1];
+  const deltaTxt = pdFmtVal(last.v - first.v, unit);
+  const slopeTxt = pdFmtVal(regression.slope, unit);
+
+  if (trend.tag === 'flat') {
+    return `<span class="pd-tag flat">No trend</span>` +
+           `${valid.length}-year sample shows no significant slope (slope ${slopeTxt}/yr, R²=${regression.r2.toFixed(2)}). ` +
+           `Mean reverts around ${pdFmtVal(valid.reduce((a, b) => a + b.v, 0) / valid.length, unit)}. ` +
+           `Implication: no structural drift; trade against the mean rather than the direction.`;
+  }
+  return `<span class="pd-tag ${trend.tag}">${trend.text}</span>` +
+         `<strong>${deltaTxt} shift over ${last.y - first.y} years</strong> ` +
+         `(annual slope ${slopeTxt}/yr, R²=${regression.r2.toFixed(2)}${regression.r2 >= 0.7 ? ' — high confidence' : ''}). ` +
+         `Implication: trend has persisted beyond a single-year shock; forward Cal pricing should respect at least the ${slopeTxt}/yr extrapolation, ` +
+         `and any reversion below the trend line is a candidate ${trend.text.includes('upward') ? 'long' : 'short'} entry.`;
+}
+
+// ----- Chart drawer: multi-year curves (monthly/quarterly) ---
+function drawPdMultiYearChart(svgId, legendId, seriesData, xLabels, currentYear, xLabelEvery) {
+  const svg = d3.select(`#${svgId}`);
+  svg.selectAll('*').remove();
+  svg.classed('pd-svg', true);
+  const { W, H } = spChartDims(svg, 230);
+  const padL = 42, padR = 14, padT = 14, padB = 28;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  // Collect Y range
+  const allVals = [];
+  for (const s of seriesData) for (const p of s.points) if (p.v != null) allVals.push(p.v);
+  if (allVals.length === 0) {
+    svg.append('text').attr('x', W/2).attr('y', H/2).attr('text-anchor','middle')
+       .attr('fill','#cdd2da').attr('font-size',13).text('No data');
+    document.getElementById(legendId).innerHTML = '';
+    return;
+  }
+  let yMin = Math.min(0, ...allVals);
+  let yMax = Math.max(0, ...allVals);
+  if (yMin === yMax) yMax = yMin + 1;
+  const pad = (yMax - yMin) * 0.10;
+  yMin -= pad; yMax += pad;
+  const yScale = v => padT + innerH * (1 - (v - yMin) / (yMax - yMin));
+  const zeroY = yScale(0);
+
+  const n = xLabels.length;
+  const xScale = i => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+
+  // Gridlines + Y labels (5 ticks)
+  for (let k = 0; k < 5; k++) {
+    const v = yMin + (yMax - yMin) * k / 4;
+    const y = yScale(v);
+    svg.append('line').attr('class', Math.abs(v) < 1e-6 ? 'pd-zero' : 'pd-grid')
+       .attr('x1', padL).attr('x2', W - padR).attr('y1', y).attr('y2', y);
+    svg.append('text').attr('class', 'pd-tick')
+       .attr('x', padL - 5).attr('y', y + 3).attr('text-anchor', 'end')
+       .text(state.pd.unit === 'pct' ? `${v.toFixed(0)}%` : v.toFixed(0));
+  }
+
+  // Per-year line paths
+  const linePaths = [];
+  for (const s of seriesData) {
+    const color = pdYearColor(s.year, currentYear);
+    const lineGen = d3.line()
+      .defined(d => d.v != null)
+      .x((d, i) => xScale(i))
+      .y(d => yScale(d.v))
+      .curve(d3.curveMonotoneX);
+    const path = svg.append('path').datum(s.points)
+       .attr('class', 'pd-line' + (s.year === currentYear ? ' current' : ''))
+       .attr('stroke', color)
+       .attr('d', lineGen)
+       .attr('opacity', 0);
+    path.transition().duration(450).delay(50).attr('opacity', 1);
+    linePaths.push({ year: s.year, color, points: s.points });
+  }
+
+  // X labels
+  const xLabelEls = [];
+  for (let i = 0; i < n; i++) {
+    if (xLabelEvery && (i % xLabelEvery !== 0) && i !== n - 1) continue;
+    const lab = svg.append('text')
+      .attr('class', 'pd-xlabel')
+      .attr('data-idx', i)
+      .attr('x', xScale(i)).attr('y', H - 10).attr('text-anchor', 'middle')
+      .text(xLabels[i]);
+    xLabelEls.push(lab);
+  }
+
+  // Crosshair + per-series dots
+  const cross = svg.append('line').attr('class', 'pd-cross')
+    .attr('y1', padT).attr('y2', H - padB);
+  const dots = linePaths.map(lp =>
+    svg.append('circle').attr('class', 'pd-dot').attr('r', 4)
+       .attr('stroke', lp.color)
+  );
+
+  const tt = document.getElementById('pd-tooltip');
+  function showTip(i, evt) {
+    if (!tt) return;
+    const rows = linePaths.map((lp, li) => {
+      const p = lp.points[i];
+      if (!p || p.v == null) return null;
+      return { year: lp.year, color: lp.color, v: p.v };
+    }).filter(Boolean).sort((a, b) => b.year - a.year);
+    if (!rows.length) return;
+    const valFmt = v => state.pd.unit === 'pct' ? `${v >= 0 ? '+' : ''}${v.toFixed(1)}%` : `${v.toFixed(1)} €`;
+    tt.innerHTML =
+      `<div class="ttl">${escapeHtml(xLabels[i])}</div>` +
+      rows.map(r => `<div class="row"><span class="lbl" style="color:${r.color};font-weight:600;">${r.year}</span><strong>${valFmt(r.v)}</strong></div>`).join('');
+    tt.classList.add('visible');
+    const x = evt.clientX + 14, y = evt.clientY + 14;
+    const tw = tt.offsetWidth, th = tt.offsetHeight;
+    tt.style.left = `${Math.min(x, window.innerWidth - tw - 8)}px`;
+    tt.style.top  = `${Math.min(y, window.innerHeight - th - 8)}px`;
+  }
+  function hideTip() { if (tt) tt.classList.remove('visible'); }
+  function setHotIdx(i) {
+    cross.attr('x1', xScale(i)).attr('x2', xScale(i)).classed('visible', true);
+    linePaths.forEach((lp, li) => {
+      const p = lp.points[i];
+      if (p && p.v != null) {
+        dots[li].attr('cx', xScale(i)).attr('cy', yScale(p.v)).classed('hot', true);
+      } else {
+        dots[li].classed('hot', false);
+      }
+    });
+    xLabelEls.forEach(lab => lab.classed('hot', parseInt(lab.attr('data-idx'), 10) === i));
+  }
+  function clearHot() {
+    cross.classed('visible', false);
+    dots.forEach(d => d.classed('hot', false));
+    xLabelEls.forEach(lab => lab.classed('hot', false));
+  }
+
+  for (let i = 0; i < n; i++) {
+    const halfStep = innerW / Math.max(n - 1, 1) / 2;
+    const x0 = xScale(i) - halfStep;
+    svg.append('rect')
+      .attr('x', x0).attr('y', padT)
+      .attr('width', halfStep * 2).attr('height', innerH)
+      .attr('fill', 'transparent').style('pointer-events', 'all')
+      .on('mouseenter', (evt) => { setHotIdx(i); showTip(i, evt); })
+      .on('mousemove',  (evt) => { showTip(i, evt); })
+      .on('mouseleave', () => { clearHot(); hideTip(); });
+  }
+
+  // Legend
+  const legendEl = document.getElementById(legendId);
+  legendEl.innerHTML = seriesData.map(s => {
+    const c = pdYearColor(s.year, currentYear);
+    const ytdMark = s.year === currentYear ? ' YTD' : '';
+    return `<span><span class="pd-sw" style="background:${c};"></span>${s.year}${ytdMark}</span>`;
+  }).join('');
+}
+
+// ----- Chart drawer: yearly single curve + trend -----------
+function drawPdYearlyChart(svgId, legendId, points, regression, currentYear) {
+  const svg = d3.select(`#${svgId}`);
+  svg.selectAll('*').remove();
+  svg.classed('pd-svg', true);
+  const { W, H } = spChartDims(svg, 230);
+  const padL = 44, padR = 14, padT = 14, padB = 28;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  const vals = points.map(p => p.v).filter(v => v != null);
+  if (vals.length === 0) {
+    svg.append('text').attr('x', W/2).attr('y', H/2).attr('text-anchor','middle')
+       .attr('fill','#cdd2da').attr('font-size',13).text('No data');
+    document.getElementById(legendId).innerHTML = '';
+    return;
+  }
+  let yMin = Math.min(0, ...vals);
+  let yMax = Math.max(0, ...vals);
+  if (yMin === yMax) yMax = yMin + 1;
+  const padY = (yMax - yMin) * 0.10;
+  yMin -= padY; yMax += padY;
+  const yScale = v => padT + innerH * (1 - (v - yMin) / (yMax - yMin));
+
+  const n = points.length;
+  const xScale = i => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+
+  // Gridlines
+  for (let k = 0; k < 5; k++) {
+    const v = yMin + (yMax - yMin) * k / 4;
+    const y = yScale(v);
+    svg.append('line').attr('class', Math.abs(v) < 1e-6 ? 'pd-zero' : 'pd-grid')
+       .attr('x1', padL).attr('x2', W - padR).attr('y1', y).attr('y2', y);
+    svg.append('text').attr('class', 'pd-tick')
+       .attr('x', padL - 5).attr('y', y + 3).attr('text-anchor', 'end')
+       .text(state.pd.unit === 'pct' ? `${v.toFixed(0)}%` : v.toFixed(0));
+  }
+
+  // Trend line first (so actual line is drawn on top)
+  if (regression && regression.slope != null) {
+    const xMinIdx = 1, xMaxIdx = n;
+    const y0 = regression.intercept + regression.slope * xMinIdx;
+    const y1 = regression.intercept + regression.slope * xMaxIdx;
+    svg.append('line').attr('class', 'pd-trend')
+       .attr('x1', xScale(0)).attr('x2', xScale(n - 1))
+       .attr('y1', yScale(y0)).attr('y2', yScale(y1));
+  }
+
+  // Actual line
+  const lineGen = d3.line()
+    .defined(d => d.v != null)
+    .x((d, i) => xScale(i))
+    .y(d => yScale(d.v))
+    .curve(d3.curveMonotoneX);
+  svg.append('path').datum(points)
+     .attr('class', 'pd-line current')
+     .attr('stroke', '#378ADD')
+     .attr('d', lineGen)
+     .attr('opacity', 0)
+     .transition().duration(450).delay(50).attr('opacity', 1);
+
+  // Year-coloured anchor dots
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (p.v == null) continue;
+    const isCur = p.year === currentYear;
+    svg.append('circle')
+       .attr('cx', xScale(i)).attr('cy', yScale(p.v))
+       .attr('r', isCur ? 4 : 3.2)
+       .attr('fill', pdYearColor(p.year, currentYear))
+       .attr('stroke', '#fff').attr('stroke-width', 1);
+  }
+
+  // X labels
+  const xLabelEls = [];
+  for (let i = 0; i < n; i++) {
+    const lab = svg.append('text')
+      .attr('class', 'pd-xlabel')
+      .attr('data-idx', i)
+      .attr('x', xScale(i)).attr('y', H - 10).attr('text-anchor', 'middle')
+      .text(points[i].label);
+    xLabelEls.push(lab);
+  }
+
+  // Crosshair + tooltip
+  const cross = svg.append('line').attr('class', 'pd-cross')
+    .attr('y1', padT).attr('y2', H - padB);
+  const hot = svg.append('circle').attr('class', 'pd-dot').attr('r', 5)
+    .attr('stroke', '#f5a623').attr('stroke-width', 2);
+
+  const tt = document.getElementById('pd-tooltip');
+  function showTip(i, evt) {
+    if (!tt) return;
+    const p = points[i];
+    if (p.v == null) return;
+    const valFmt = state.pd.unit === 'pct'
+      ? `${p.v >= 0 ? '+' : ''}${p.v.toFixed(1)}%`
+      : `${p.v.toFixed(1)} €`;
+    const trendV = regression && regression.slope != null
+      ? regression.intercept + regression.slope * (i + 1) : null;
+    const trendFmt = trendV != null
+      ? (state.pd.unit === 'pct'
+          ? `${trendV >= 0 ? '+' : ''}${trendV.toFixed(1)}%`
+          : `${trendV.toFixed(1)} €`)
+      : null;
+    tt.innerHTML =
+      `<div class="ttl">${p.year}</div>` +
+      `<div class="row"><span class="lbl">Actual</span><strong>${valFmt}</strong></div>` +
+      (trendFmt ? `<div class="row"><span class="lbl">Trend</span>${trendFmt}</div>` : '');
+    tt.classList.add('visible');
+    const x = evt.clientX + 14, y = evt.clientY + 14;
+    const tw = tt.offsetWidth, th = tt.offsetHeight;
+    tt.style.left = `${Math.min(x, window.innerWidth - tw - 8)}px`;
+    tt.style.top  = `${Math.min(y, window.innerHeight - th - 8)}px`;
+  }
+  function hideTip() { if (tt) tt.classList.remove('visible'); }
+  function setHotIdx(i) {
+    const p = points[i];
+    if (!p || p.v == null) { hot.classed('hot', false); return; }
+    cross.attr('x1', xScale(i)).attr('x2', xScale(i)).classed('visible', true);
+    hot.attr('cx', xScale(i)).attr('cy', yScale(p.v))
+       .attr('fill', pdYearColor(p.year, currentYear))
+       .classed('hot', true);
+    xLabelEls.forEach(lab => lab.classed('hot', parseInt(lab.attr('data-idx'), 10) === i));
+  }
+  function clearHot() {
+    cross.classed('visible', false);
+    hot.classed('hot', false);
+    xLabelEls.forEach(lab => lab.classed('hot', false));
+  }
+  for (let i = 0; i < n; i++) {
+    const halfStep = innerW / Math.max(n - 1, 1) / 2;
+    svg.append('rect')
+      .attr('x', xScale(i) - halfStep).attr('y', padT)
+      .attr('width', halfStep * 2).attr('height', innerH)
+      .attr('fill', 'transparent').style('pointer-events', 'all')
+      .on('mouseenter', (evt) => { setHotIdx(i); showTip(i, evt); })
+      .on('mousemove',  (evt) => { showTip(i, evt); })
+      .on('mouseleave', () => { clearHot(); hideTip(); });
+  }
+
+  // Legend
+  const legendEl = document.getElementById(legendId);
+  legendEl.innerHTML =
+    `<span><span class="pd-sw" style="background:#378ADD;"></span>Annual avg</span>` +
+    `<span><span class="pd-sw" style="background:#2c3340;border-top:1px dashed #2c3340;background:none;"></span>OLS trend</span>` +
+    (regression && regression.r2 != null ? `<span style="color:#8a93a0;">R² = ${regression.r2.toFixed(2)}</span>` : '');
 }
