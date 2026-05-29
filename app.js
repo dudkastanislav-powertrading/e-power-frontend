@@ -1315,7 +1315,7 @@ function tableSparkSVG(zoneCode) {
   const d = pts.map((v, i) => `${(i * sx).toFixed(1)},${(h - ((v - mn) / r) * h).toFixed(1)}`).join(' ');
   const up = pts[pts.length - 1] >= pts[0];
   const col = up ? '#b03030' : '#2e7d32';
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;margin-left:auto;"><polyline points="${d}" fill="none" stroke="${col}" stroke-width="1.5"/></svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;width:100%;height:${h}px;"><polyline points="${d}" fill="none" stroke="${col}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
 }
 
 function fmtCell(v) {

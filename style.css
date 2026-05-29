@@ -74,8 +74,8 @@ button { font: inherit; cursor: pointer; }
 /* === Layout ================================================ */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) 460px;
+  gap: 16px;
   padding: 20px;
   align-items: start;
 }
@@ -440,21 +440,33 @@ button { font: inherit; cursor: pointer; }
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  table-layout: fixed;
 }
 #dam-table thead {
   position: sticky; top: 0; background: #f9fafb; z-index: 1;
 }
 #dam-table th {
-  padding: 8px 10px; text-align: left;
+  padding: 7px 6px; text-align: left;
   font-weight: 600; color: #5b6471;
   border-bottom: 1px solid #e6e8ed;
   cursor: pointer; user-select: none;
   white-space: nowrap;
 }
+/* Fixed column widths so all 7 columns fit the panel without horizontal scroll */
+#dam-table th:nth-child(1), #dam-table td:nth-child(1) { width: 25%; }
+#dam-table th:nth-child(2), #dam-table td:nth-child(2) { width: 17%; }
+#dam-table th:nth-child(3), #dam-table td:nth-child(3) { width: 16%; }
+#dam-table th:nth-child(4), #dam-table td:nth-child(4) { width: 12.5%; }
+#dam-table th:nth-child(5), #dam-table td:nth-child(5) { width: 12.5%; }
+#dam-table th:nth-child(6), #dam-table td:nth-child(6) { width: 8.5%; }
+#dam-table th:nth-child(7), #dam-table td:nth-child(7) { width: 8.5%; }
 #dam-table th.num, #dam-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 #dam-table tbody td {
-  padding: 7px 10px; border-bottom: 1px solid #f4f5f7;
+  padding: 6px 6px; border-bottom: 1px solid #f4f5f7;
+  vertical-align: middle; overflow: hidden; text-overflow: ellipsis;
 }
+#dam-table tbody td:first-child { white-space: normal; line-height: 1.25; }
+#dam-table tbody td .spark-cell, #dam-table td.spark-cell { padding-left: 0; padding-right: 0; }
 #dam-table tbody tr:hover { background: #f9fafb; }
 #dam-table tbody tr.zone-active { background: #fff8eb; }
 
