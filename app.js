@@ -2996,11 +2996,8 @@ function drawBarsAxis(svg, arr, opts) {
   const lineArr = opts.lineArr;
   const lineNumeric = (Array.isArray(lineArr) ? lineArr.filter(v => v != null) : []);
   const refNumeric = [];
-  if (opts.ref) {
-    for (const k of ['mean', 'lo', 'hi']) {
-      const a = opts.ref[k];
-      if (Array.isArray(a)) for (const v of a) if (v != null) refNumeric.push(v);
-    }
+  if (opts.ref && Array.isArray(opts.ref.mean)) {
+    for (const v of opts.ref.mean) if (v != null) refNumeric.push(v);
   }
   const valid = arr.filter(v => v != null).concat(lineNumeric, refNumeric);
   let yMin = Math.min(0, ...valid);
@@ -3038,23 +3035,7 @@ function drawBarsAxis(svg, arr, opts) {
   if (opts.ref && Array.isArray(opts.ref.mean)) {
     const rf = opts.ref;
     const nn = arr.length, stp = innerW / nn, xc = i => padL + stp * i + stp / 2;
-    // P5–P95 band as contiguous filled runs (handles gaps).
-    let run = [];
-    const flush = () => {
-      if (run.length >= 2) {
-        let d = '';
-        run.forEach((i, k) => { d += (k === 0 ? 'M' : ' L') + xc(i).toFixed(1) + ' ' + yScale(rf.hi[i]).toFixed(1); });
-        for (let k = run.length - 1; k >= 0; k--) { const i = run[k]; d += ' L' + xc(i).toFixed(1) + ' ' + yScale(rf.lo[i]).toFixed(1); }
-        svg.append('path').attr('d', d + ' Z')
-           .attr('fill', '#5b6471').attr('opacity', 0.10).attr('pointer-events', 'none');
-      }
-      run = [];
-    };
-    for (let i = 0; i < nn; i++) {
-      if (rf.lo[i] != null && rf.hi[i] != null) run.push(i); else flush();
-    }
-    flush();
-    // Trailing-normal mean line (segmented across gaps).
+    // Trailing-normal mean line only (segmented across gaps). No corridor.
     let dM = '', drawn = false;
     for (let i = 0; i < nn; i++) {
       if (rf.mean[i] == null) { drawn = false; continue; }
@@ -3071,7 +3052,7 @@ function drawBarsAxis(svg, arr, opts) {
            .attr('x', W - padR - 2).attr('y', yScale(rf.mean[lastI]) - 3)
            .attr('text-anchor', 'end').attr('font-size', 9)
            .attr('fill', '#5b6471').attr('opacity', 0.9).attr('pointer-events', 'none')
-           .text('trailing normal · P5–95');
+           .text('trailing normal');
       }
     }
   }
