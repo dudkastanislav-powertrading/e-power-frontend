@@ -2509,7 +2509,10 @@ function drawHourBars(svgId, arr, opts) {
   const lineArr = opts && opts.lineArr;
   const hasLine = Array.isArray(lineArr) && lineArr.some(v => v != null);
   const atcArr = (opts && Array.isArray(opts.atcArr)) ? opts.atcArr : null;
-  const padL = 42, padR = hasLine ? 48 : 10, padT = 14, padB = 28;
+  // Single shared y-axis since 2026-05-29 — JAO marginal (€/MW) is plotted
+  // on the same scale as DAM spread (€/MWh) so users can compare height
+  // visually. No right-side ticks → keep padR small.
+  const padL = 42, padR = 10, padT = 14, padB = 28;
   if (!arr) {
     svg.append('text')
        .attr('x', W / 2).attr('y', H / 2).attr('text-anchor', 'middle')
@@ -2635,8 +2638,13 @@ function drawBarsAxis(svg, arr, opts) {
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
 
-  // Determine y range
-  const valid = arr.filter(v => v != null);
+  // Determine y range. Since 2026-05-29 the JAO marginal line shares the
+  // same left axis as the spread bars, so its values participate in the
+  // min/max sweep. €/MW and €/MWh are kept on one scale on purpose —
+  // makes them visually comparable.
+  const lineArr = opts.lineArr;
+  const lineNumeric = (Array.isArray(lineArr) ? lineArr.filter(v => v != null) : []);
+  const valid = arr.filter(v => v != null).concat(lineNumeric);
   let yMin = Math.min(0, ...valid);
   let yMax = Math.max(0, ...valid);
   if (yMin === yMax) { yMin -= 1; yMax += 1; }
@@ -2785,32 +2793,13 @@ function drawBarsAxis(svg, arr, opts) {
        });
   }
 
-  // ----- Optional line overlay (JAO marginal price, right Y-axis) -----
-  const lineArr = opts.lineArr;
+  // ----- Optional line overlay (JAO marginal price, SHARED left Y-axis) -----
+  // Single y-axis: marginal (€/MW) and spread (€/MWh) are numerically close
+  // for DA auctions and visually comparable on one scale. No right-side
+  // ticks anymore — the legend disambiguates units.
   if (lineArr && lineArr.length) {
     const lineColor = opts.lineColor || '#f97316';
     const lineLabel = opts.lineLabel || 'line';
-
-    // Independent y-scale on the right. Always include 0 in the range.
-    const lineValid = lineArr.filter(v => v != null);
-    let lMin = Math.min(0, ...lineValid);
-    let lMax = Math.max(0, ...lineValid);
-    if (lMin === lMax) { lMin -= 1; lMax += 1; }
-    const lPad = (lMax - lMin) * 0.10;
-    lMin -= lPad; lMax += lPad;
-    const lineYScale = v => padT + innerH * (1 - (v - lMin) / (lMax - lMin));
-
-    // Right-side tick labels (max / 0 if in range / min).
-    const lineTicks = [lMax, 0, lMin].filter((v, i, a) => a.indexOf(v) === i);
-    lineTicks.forEach(v => {
-      const y = lineYScale(v);
-      svg.append('text')
-         .attr('class', 'y-tick')
-         .attr('x', W - padR + 4).attr('y', y + 3)
-         .attr('text-anchor', 'start')
-         .attr('fill', lineColor)
-         .text(v.toFixed(1));
-    });
 
     // Build a polyline from non-null segments — spanGaps:false equivalent.
     // We split on nulls so the path breaks instead of crossing through gaps.
@@ -2823,7 +2812,7 @@ function drawBarsAxis(svg, arr, opts) {
         if (seg.length > 0) { segments.push(seg); seg = []; }
         continue;
       }
-      seg.push({ x: cx, y: lineYScale(v), i, v });
+      seg.push({ x: cx, y: yScale(v), i, v });
     }
     if (seg.length > 0) segments.push(seg);
 
