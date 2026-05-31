@@ -5588,6 +5588,8 @@ function renderForecast() {
   const st = document.getElementById('fc-status');
   const sumEl = document.getElementById('fc-summary');
 
+  if (fcState.mode === 'health') { if (st) st.classList.add('hidden'); fcRenderHealth(za); return; }
+
   const getSeries = run => fcState.mode === 'dam' ? fcSeries(za, date, run) : fcSpread(za, zb, date, run);
   const sPrim = getSeries(primary);
   if (!sPrim) {
@@ -5786,4 +5788,64 @@ function fcRenderQuality() {
     <table class="pd-table" style="margin:6px 0"><thead><tr><th>Zone</th><th>MAE</th><th>Bias</th><th>Coverage</th></tr></thead><tbody>${zr}</tbody></table>
     <p><b>⚠ Use with care:</b></p>
     <ul style="margin:4px 0 0 18px">${(q.caveats || []).map(c => `<li>${c}</li>`).join('')}</ul>`;
+}
+
+// ===== Model-health mode: is the model getting better over time? =====
+function fcMean(a) { const v = a.filter(x => x != null); return v.length ? v.reduce((x, y) => x + y, 0) / v.length : null; }
+
+function fcRenderHealth(zone) {
+  const M = fcState.payload.metrics;
+  const tbl = document.getElementById('fc-table'), gb = document.getElementById('fc-guide-body'),
+        gh = document.querySelector('#fc-guide h4'), gsub = document.querySelector('#fc-guide .fc-guide-sub'),
+        sum = document.getElementById('fc-summary'), leg = document.getElementById('fc-legend');
+  if (!M || !Object.keys(M).length) {
+    document.getElementById('fc-chart').innerHTML = '';
+    tbl.innerHTML = '<tbody><tr><td style="padding:14px">Метрики ще накопичуються (щодня з relabel).</td></tr></tbody>';
+    if (gb) gb.innerHTML = ''; return;
+  }
+  const order = fcState.payload.zones || Object.keys(M);
+  const rows = order.map(z => {
+    const s = M[z]; if (!s || !s.length) return '';
+    const m7 = fcMean(s.slice(-7).map(x => x.mae)), mp = fcMean(s.slice(-14, -7).map(x => x.mae)),
+          c7 = fcMean(s.slice(-7).map(x => x.cov));
+    let arrow = '—', col = '';
+    if (m7 != null && mp != null) { const d = m7 - mp; if (d < -1) { arrow = '↓ краще'; col = 'color:#1e7a3a'; } else if (d > 1) { arrow = '↑ гірше'; col = 'color:#a8281a'; } else arrow = '≈'; }
+    const dtxt = (m7 != null && mp != null) ? ((m7 - mp >= 0 ? '+' : '') + (m7 - mp).toFixed(1)) : '';
+    return `<tr><td>${z}</td><td>${m7 != null ? m7.toFixed(1) : '—'}</td><td>${mp != null ? mp.toFixed(1) : '—'}</td><td style="${col}">${dtxt}</td><td>${c7 != null ? (c7 * 100).toFixed(0) + '%' : '—'}</td><td style="${col}">${arrow}</td></tr>`;
+  }).join('');
+  tbl.innerHTML = `<thead><tr><th>Zone</th><th>MAE 7д</th><th>MAE поп.7д</th><th>Δ</th><th>Cover 7д</th><th>Тренд</th></tr></thead><tbody>${rows}</tbody>`;
+  fcDrawHealthChart(M[zone] || [], zone);
+  if (gh) gh.textContent = 'Тренд якості (MAE)';
+  if (gsub) gsub.textContent = 'Нижче = точніше. 7д проти попередніх 7д.';
+  if (gb) {
+    const s = M[zone] || [], l = fcMean(s.slice(-7).map(x => x.mae)), p = fcMean(s.slice(-14, -7).map(x => x.mae));
+    let v = 'замало даних';
+    if (l != null && p != null) { const d = l - p; v = d < -1 ? `покращується (MAE ${p.toFixed(0)}→${l.toFixed(0)})` : d > 1 ? `погіршується (MAE ${p.toFixed(0)}→${l.toFixed(0)})` : `стабільно (~${l.toFixed(0)})`; }
+    gb.innerHTML = `<div class="fc-guide-band"><span class="h">${zone}</span><span class="why">${v}</span></div>`
+      + `<p style="font-size:11px;color:#5b6271;margin:8px 0 0">Тижневий авто-огляд: <code>model_weekly_review.py</code>. Champion/challenger + авто-rollback — у плані.</p>`;
+  }
+  if (leg) leg.innerHTML = `<span style="color:${FC_BLUE}">■ MAE щодня</span> &nbsp; <span style="color:#1f2430">■ 7-дн середнє</span>`;
+  if (sum) { const a = fcMean(order.flatMap(z => (M[z] || []).slice(-7).map(x => x.mae))); sum.textContent = a != null ? `Середній MAE по ядру (останні 7д): ${a.toFixed(1)} €/MWh — нижче = краще` : '—'; }
+}
+
+function fcDrawHealthChart(series, zone) {
+  const svg = document.getElementById('fc-chart'); if (!svg) return;
+  fcState.chart = null;   // disable hourly hover in this mode
+  const W = 1180, H = 460, padL = 52, padR = 20, padT = 30, padB = 46, INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed';
+  if (!series.length) { svg.innerHTML = `<text x="20" y="40" fill="${MUT}" font-size="13">Нема метрик для ${zone}.</text>`; return; }
+  const mae = series.map(x => x.mae), n = series.length;
+  const xs = i => padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1));
+  const hi = (Math.max(...mae) * 1.15) || 10, lo = 0, ys = v => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
+  const roll = mae.map((_, i) => { const s = mae.slice(Math.max(0, i - 6), i + 1); return s.reduce((a, b) => a + b, 0) / s.length; });
+  const line = arr => arr.map((v, i) => (i ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(v).toFixed(1)).join(' ');
+  const gy = []; for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4; gy.push(`<line x1="${padL}" y1="${ys(v).toFixed(1)}" x2="${W - padR}" y2="${ys(v).toFixed(1)}" stroke="${GRID}"/><text x="${padL - 7}" y="${(ys(v) + 3).toFixed(1)}" fill="${MUT}" font-size="11" text-anchor="end">${v.toFixed(0)}</text>`); }
+  const step = Math.max(1, Math.floor(n / 8)), xt = [];
+  for (let i = 0; i < n; i += step) xt.push(`<text x="${xs(i).toFixed(1)}" y="${H - 14}" fill="${MUT}" font-size="10" text-anchor="middle">${series[i].d.slice(5)}</text>`);
+  const dots = mae.map((v, i) => `<circle cx="${xs(i).toFixed(1)}" cy="${ys(v).toFixed(1)}" r="2.6" fill="${FC_BLUE}"/>`).join('');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('width', '100%');
+  svg.innerHTML = `<text x="${padL}" y="16" fill="${INK}" font-size="13" font-weight="600">Якість моделі — MAE по днях (нижче = краще) · ${zone}</text>`
+    + gy.join('') + xt.join('')
+    + `<path d="${line(mae)}" fill="none" stroke="${FC_BLUE}" stroke-width="1.6" opacity="0.55"/>` + dots
+    + `<path d="${line(roll)}" fill="none" stroke="${INK}" stroke-width="2.6"/>`
+    + `<text x="${W - padR}" y="16" fill="${MUT}" font-size="10" text-anchor="end">€/MWh MAE</text>`;
 }
