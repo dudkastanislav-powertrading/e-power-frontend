@@ -344,7 +344,7 @@ function bindUI() {
   // Day picker
   const dateInput = document.getElementById('dam-date');
   dateInput.value = state.date;
-  dateInput.max = todayISO();
+  dateInput.max = tomorrowISO();   // D+1 prices are published & in snapshot
   dateInput.min = '2021-01-01';
   dateInput.addEventListener('change', (e) => {
     state.date = e.target.value;
@@ -404,10 +404,10 @@ function bindUI() {
   // Custom range
   const fromInput = document.getElementById('dam-from');
   const toInput = document.getElementById('dam-to');
-  const todayStr = todayISO();
+  const todayStr = todayISO(), tomorrowStr = tomorrowISO();
   fromInput.value = '2024-01-01';
-  toInput.value = todayStr;
-  fromInput.max = todayStr; toInput.max = todayStr;
+  toInput.value = tomorrowStr;
+  fromInput.max = tomorrowStr; toInput.max = tomorrowStr;
   fromInput.min = '2021-01-01'; toInput.min = '2021-01-01';
   state.rangeFrom = fromInput.value;
   state.rangeTo = toInput.value;
@@ -1669,6 +1669,14 @@ function todayISO() {
   d.setUTCHours(0, 0, 0, 0);
   return ymd(d);
 }
+// D+1: DAM prices for tomorrow are published today ~12:45 CET and are in the
+// snapshot, so price views (Map / Spreads) must allow selecting tomorrow.
+function tomorrowISO() {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return ymd(d);
+}
 function ymd(d) {
   return d.toISOString().slice(0, 10);
 }
@@ -1756,6 +1764,7 @@ async function showView(view) {
   const isSpreads = view === 'dam-spreads';
   const isGen = view === 'generation';
   const isPD = view === 'product-dynamics';
+  const isFc = view === 'forecast';
 
   document.querySelector('.map-panel').classList.toggle('hidden', !isMap);
   document.querySelector('.table-panel').classList.toggle('hidden', !isMap);
@@ -1768,6 +1777,17 @@ async function showView(view) {
   if (genPanel) genPanel.classList.toggle('hidden', !isGen);
   const pdPanel = document.getElementById('dynamics-view');
   if (pdPanel) pdPanel.classList.toggle('hidden', !isPD);
+  const fcPanel = document.getElementById('forecast-view');
+  if (fcPanel) fcPanel.classList.toggle('hidden', !isFc);
+
+  if (isFc) {
+    try { await initForecastView(); renderForecast(); }
+    catch (e) {
+      console.error('[forecast]', e);
+      const st = document.getElementById('fc-status');
+      if (st) { st.textContent = 'Forecast error: ' + (e && e.message || e); st.classList.remove('hidden'); st.classList.add('error'); }
+    }
+  }
 
   if (isSpreads) {
     await initSpreadsView();
@@ -1837,7 +1857,9 @@ function populateSpreadsSelects() {
 function initSpreadsDefaults() {
   // Day default: latest data we have (from state.date which is capped to maxDate)
   state.spreads.dayDate = state.date || todayISO();
-  document.getElementById('sp-day-date').value = state.spreads.dayDate;
+  const spDay = document.getElementById('sp-day-date');
+  spDay.value = state.spreads.dayDate;
+  spDay.max = tomorrowISO();   // allow D+1 (prices published & in snapshot)
 
   // Month default: month of dayDate
   const d = parseISO(state.spreads.dayDate);
@@ -5472,4 +5494,243 @@ function renderAllDefinitions() {
   renderDefinitionsInto('defs-spreads',  'spreads');
   renderDefinitionsInto('defs-gen',      'gen');
   renderDefinitionsInto('defs-dynamics', 'dynamics');
+}
+
+// ====================================================================
+// Forecast view — DAM price forecast P10/P50/P90 (+ spread A−B), actual overlay.
+// Data contract: data/forecast.json (snapshot_export_forecast.py). See SITE_MAP.md.
+// ====================================================================
+const fcState = { init: false, payload: null, mode: 'dam', gran: 60 };
+const FC_BLUE = '#3d6fb4', FC_RED = '#c0392b', FC_GREY = '#9aa0a6';
+
+async function initForecastView() {
+  if (fcState.init) return;
+  fcState.init = true;
+  const st = document.getElementById('fc-status');
+  try {
+    const r = await fetch('./data/forecast.json', { cache: 'no-cache' });
+    if (!r.ok) throw new Error('forecast.json not found — run snapshot_export_forecast.py');
+    fcState.payload = await r.json();
+  } catch (e) {
+    if (st) { st.textContent = 'No forecast data yet: ' + (e.message || e); st.classList.add('error'); }
+    fcState.payload = { zones: [], dates: [], runs: ['10:45', '10:00'], data: {} };
+    return;
+  }
+  const P = fcState.payload;
+  const aSel = document.getElementById('fc-zone-a'), bSel = document.getElementById('fc-zone-b'),
+        dSel = document.getElementById('fc-date');
+  const opt = z => `<option>${z}</option>`;
+  aSel.innerHTML = P.zones.map(opt).join('');
+  bSel.innerHTML = P.zones.map(opt).join('');
+  if (P.zones.includes('RO')) aSel.value = 'RO';
+  if (P.zones.includes('HU')) bSel.value = 'HU';
+  dSel.innerHTML = P.dates.map(opt).join('');
+  if (P.dates.length) dSel.value = P.dates[P.dates.length - 1];
+  fcSyncZoneB();
+
+  // single-select groups
+  ['fc-mode', 'fc-gran'].forEach(grp => {
+    document.querySelectorAll(`[data-${grp}]`).forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll(`[data-${grp}]`).forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        if (grp === 'fc-mode') {
+          fcState.mode = btn.dataset.fcMode;
+          fcSyncZoneB();
+        } else fcState.gran = +btn.dataset.fcGran;
+        renderForecast();
+      });
+    });
+  });
+  // run group = multi-toggle
+  document.querySelectorAll('[data-fc-run]').forEach(btn =>
+    btn.addEventListener('click', () => { btn.classList.toggle('active'); renderForecast(); }));
+  [aSel, bSel, dSel].forEach(s => s.addEventListener('change', renderForecast));
+  const exp = document.getElementById('fc-export');
+  if (exp) exp.addEventListener('click', fcExportCsv);
+  if (st) st.classList.add('hidden');
+  fcRenderQuality();
+}
+
+// Zone B is only meaningful in spread mode → disable + dim it in DAM mode.
+function fcSyncZoneB() {
+  const wrap = document.getElementById('fc-zoneb-wrap');
+  const bSel = document.getElementById('fc-zone-b');
+  const on = fcState.mode === 'spread';
+  if (bSel) bSel.disabled = !on;
+  if (wrap) { wrap.style.opacity = on ? '1' : '0.4'; wrap.style.pointerEvents = on ? 'auto' : 'none'; }
+}
+
+function fcSeries(zone, date, run) {
+  const z = fcState.payload.data[zone];
+  if (!z || !z[date] || !z[date][run]) return null;
+  return z[date][run];
+}
+function fcActual(zone, date) {
+  const z = fcState.payload.data[zone];
+  return (z && z[date] && z[date].actual) ? z[date].actual : new Array(24).fill(null);
+}
+function fcSpread(a, b, date, run) {
+  const A = fcSeries(a, date, run), B = fcSeries(b, date, run);
+  if (!A || !B) return null;
+  const f = (x, y) => x.map((v, i) => (v == null || y[i] == null) ? null : +(v - y[i]).toFixed(1));
+  return { p10: f(A.p10, B.p90), p50: f(A.p50, B.p50), p90: f(A.p90, B.p10) };
+}
+function fcExpand(a) { if (fcState.gran === 60 || !a) return a; const o = []; a.forEach(v => { for (let k = 0; k < 4; k++) o.push(v); }); return o; }
+
+function renderForecast() {
+  const P = fcState.payload; if (!P) return;
+  const za = document.getElementById('fc-zone-a').value,
+        zb = document.getElementById('fc-zone-b').value,
+        date = document.getElementById('fc-date').value;
+  const runs = [...document.querySelectorAll('[data-fc-run].active')].map(b => b.dataset.fcRun);
+  const primary = runs.includes('10:45') ? '10:45' : (runs[0] || '10:45');
+  const st = document.getElementById('fc-status');
+  const sumEl = document.getElementById('fc-summary');
+
+  const getSeries = run => fcState.mode === 'dam' ? fcSeries(za, date, run) : fcSpread(za, zb, date, run);
+  const sPrim = getSeries(primary);
+  if (!sPrim) {
+    if (st) { st.textContent = 'No forecast for this selection.'; st.classList.remove('hidden'); }
+    document.getElementById('fc-table').innerHTML = '';
+    document.getElementById('fc-chart').innerHTML = '';
+    return;
+  }
+  if (st) st.classList.add('hidden');
+  const actual = fcState.mode === 'dam' ? fcActual(za, date)
+    : (() => { const A = fcActual(za, date), B = fcActual(zb, date);
+               return A.map((v, i) => (v == null || B[i] == null) ? null : +(v - B[i]).toFixed(1)); })();
+  const title = fcState.mode === 'dam' ? `${za} · ${date}` : `${za} − ${zb} · ${date}`;
+  fcDrawChart(sPrim, runs.filter(r => r !== primary).map(getSeries).filter(Boolean), actual, title);
+  fcDrawTable(sPrim, actual);
+  const valid = sPrim.p50.filter(v => v != null);
+  if (sumEl) sumEl.textContent = valid.length
+    ? `Baseload P50 ≈ ${(valid.reduce((a, b) => a + b, 0) / valid.length).toFixed(1)} €/MWh · run ${primary}`
+    + (fcState.mode === 'spread' ? ' · spread = difference of level forecasts' : '') : '—';
+}
+
+function fcDrawChart(s, others, act, title) {
+  const W = 1040, H = 420, padL = 46, padR = 14, padT = 26, padB = 28;
+  const p50 = fcExpand(s.p50), p10 = fcExpand(s.p10), p90 = fcExpand(s.p90), a = fcExpand(act);
+  const n = p50.length, xs = i => padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1));
+  const vals = [...p10, ...p90, ...a].filter(v => v != null);
+  let lo = Math.min(...vals), hi = Math.max(...vals); if (!isFinite(lo)) { lo = 0; hi = 1; }
+  const pad = (hi - lo) * 0.1 || 5; lo -= pad; hi += pad;
+  const ys = v => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
+  const line = arr => { let d = '', st = false; arr.forEach((v, i) => { if (v == null) { st = false; return; } d += (st ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(v).toFixed(1) + ' '; st = true; }); return d; };
+  let band = ''; { let up = '', started = false;
+    for (let i = 0; i < n; i++) { if (p90[i] == null) continue; up += (started ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(p90[i]).toFixed(1) + ' '; started = true; }
+    for (let i = n - 1; i >= 0; i--) { if (p10[i] == null) continue; up += 'L' + xs(i).toFixed(1) + ' ' + ys(p10[i]).toFixed(1) + ' '; } band = up + 'Z'; }
+  const gy = []; for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4; gy.push(`<line x1="${padL}" y1="${ys(v).toFixed(1)}" x2="${W - padR}" y2="${ys(v).toFixed(1)}" stroke="#2a3543"/><text x="${padL - 6}" y="${(ys(v) + 3).toFixed(1)}" fill="#8a97a8" font-size="10" text-anchor="end">${v.toFixed(0)}</text>`); }
+  const step = fcState.gran === 60 ? 2 : 8; const xt = [];
+  for (let i = 0; i < n; i += step) { const hr = fcState.gran === 60 ? i + 1 : Math.floor(i / 4) + 1; xt.push(`<text x="${xs(i).toFixed(1)}" y="${H - 9}" fill="#8a97a8" font-size="10" text-anchor="middle">${hr}</text>`); }
+  const otherLines = (others || []).map(o => `<path d="${line(fcExpand(o.p50))}" fill="none" stroke="${FC_BLUE}" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.6"/>`).join('');
+  const actLine = a.some(v => v != null) ? `<path d="${line(a)}" fill="none" stroke="${FC_RED}" stroke-width="2"/>` : '';
+  const svg = document.getElementById('fc-chart');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', '100%');
+  svg.innerHTML = `<text x="${padL}" y="15" fill="#e8edf3" font-size="13">${title}</text>`
+    + gy.join('') + xt.join('')
+    + `<path d="${band}" fill="${FC_BLUE}" fill-opacity="0.18" stroke="none"/>`
+    + `<path d="${line(p50)}" fill="none" stroke="${FC_BLUE}" stroke-width="2.2"/>`
+    + otherLines + actLine
+    + `<text x="${W - padR}" y="15" fill="#8a97a8" font-size="10" text-anchor="end">€/MWh · CET 1..24</text>`
+    + `<g id="fc-guide" style="pointer-events:none"></g>`
+    + `<rect id="fc-hit" x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent" style="cursor:crosshair"/>`;
+  // store geometry for interactive hover
+  fcState.chart = { p50, p10, p90, a, lo, hi, padL, padR, padT, padB, W, H, n, xs, ys };
+  fcBindHover();
+}
+
+// Interactive hover — vertical guide + dots + tooltip (mirrors other tabs' UX).
+function fcBindHover() {
+  const svg = document.getElementById('fc-chart');
+  const tip = document.getElementById('fc-tooltip');
+  if (!svg || svg._fcHoverBound) { return; }
+  svg._fcHoverBound = true;
+  const move = (evt) => {
+    const c = fcState.chart; if (!c) return;
+    const pt = (typeof d3 !== 'undefined' && d3.pointer) ? d3.pointer(evt, svg) : (() => {
+      const r = svg.getBoundingClientRect(); const sx = c.W / r.width;
+      return [(evt.clientX - r.left) * sx, (evt.clientY - r.top) * sx];
+    })();
+    const frac = (pt[0] - c.padL) / (c.W - c.padL - c.padR);
+    let i = Math.round(frac * (c.n - 1));
+    i = Math.max(0, Math.min(c.n - 1, i));
+    const x = c.xs(i);
+    const hr = fcState.gran === 60 ? (i + 1) : (Math.floor(i / 4) + 1);
+    const slot = fcState.gran === 60 ? `Hour ${hr}` : `${String(hr - 1).padStart(2, '0')}:${String((i % 4) * 15).padStart(2, '0')}`;
+    const g = document.getElementById('fc-guide');
+    const dot = (v, col) => v == null ? '' : `<circle cx="${x.toFixed(1)}" cy="${c.ys(v).toFixed(1)}" r="3.2" fill="${col}"/>`;
+    g.innerHTML = `<line x1="${x.toFixed(1)}" y1="${c.padT}" x2="${x.toFixed(1)}" y2="${c.H - c.padB}" stroke="#8a97a8" stroke-dasharray="3 3"/>`
+      + dot(c.p50[i], FC_BLUE) + dot(c.a[i], FC_RED);
+    const f = c.p50[i], av = c.a[i], fmt = v => v == null ? '—' : v.toFixed(1) + ' €';
+    if (tip) {
+      tip.innerHTML = `<b>${slot} CET</b><br>P50 ${fmt(f)}<br>P10–P90 ${fmt(c.p10[i])} … ${fmt(c.p90[i])}`
+        + (av != null ? `<br>Actual ${fmt(av)}` + (f != null ? ` <span style="color:#8a97a8">(err ${(av - f).toFixed(1)})</span>` : '') : '');
+      tip.classList.add('visible'); tip.setAttribute('aria-hidden', 'false');
+      const vw = window.innerWidth, vh = window.innerHeight, tw = tip.offsetWidth, th = tip.offsetHeight;
+      tip.style.left = `${Math.min(evt.clientX + 14, vw - tw - 8)}px`;
+      tip.style.top = `${Math.min(evt.clientY + 14, vh - th - 8)}px`;
+    }
+  };
+  svg.addEventListener('mousemove', move);
+  svg.addEventListener('mouseleave', () => {
+    const g = document.getElementById('fc-guide'); if (g) g.innerHTML = '';
+    if (tip) { tip.classList.remove('visible'); tip.setAttribute('aria-hidden', 'true'); }
+  });
+}
+
+function fcDrawTable(s, act) {
+  const q15 = fcState.gran === 15;
+  const label = (h, k) => q15 ? `${String(h - 1).padStart(2, '0')}:${String(k * 15).padStart(2, '0')}` : String(h);
+  const fmt = v => v == null ? '—' : v.toFixed(1);
+  const rows = [];
+  const exp = [['slot_CET', 'P10', 'P50', 'P90', 'actual', 'err']];   // CSV buffer
+  for (let h = 1; h <= 24; h++) {
+    const i = h - 1;
+    const sub = q15 ? [0, 1, 2, 3] : [0];
+    for (const k of sub) {
+      const f = s.p50[i], av = act[i];
+      const err = (f != null && av != null) ? (av - f).toFixed(1) : '';
+      rows.push(`<tr><td>${label(h, k)}</td><td>${fmt(s.p10[i])}</td><td><b>${fmt(f)}</b></td><td>${fmt(s.p90[i])}</td><td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td></tr>`);
+      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i], av == null ? '' : av, err]);
+    }
+  }
+  document.getElementById('fc-table').innerHTML =
+    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th><th>Actual</th><th>Err</th></tr></thead><tbody>${rows.join('')}</tbody>`;
+  fcState.exportRows = exp;
+  fcState.exportName = (fcState.mode === 'dam'
+    ? document.getElementById('fc-zone-a').value
+    : document.getElementById('fc-zone-a').value + '-' + document.getElementById('fc-zone-b').value)
+    + '_' + document.getElementById('fc-date').value + (q15 ? '_15min' : '_hourly');
+  const lg = document.getElementById('fc-legend');
+  if (lg) lg.innerHTML = `<span style="color:${FC_BLUE}">■ P50 forecast</span> &nbsp; <span style="color:${FC_BLUE};opacity:.5">▮ P10–P90</span> &nbsp; <span style="color:${FC_RED}">■ Actual</span>`;
+}
+
+function fcExportCsv() {
+  const rows = fcState.exportRows;
+  if (!rows || rows.length < 2) return;
+  const csv = '﻿' + rows.map(r => r.map(c => `"${c}"`).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'forecast_' + (fcState.exportName || 'export') + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// Forecast quality / version / caveats panel (from forecast.json `quality` block).
+function fcRenderQuality() {
+  const el = document.getElementById('fc-quality'); if (!el) return;
+  const q = fcState.payload && fcState.payload.quality;
+  if (!q) { el.innerHTML = '<p style="color:#8a97a8">Quality metrics not in snapshot yet.</p>'; return; }
+  const zr = (q.by_zone || []).map(z =>
+    `<tr><td>${z.zone}</td><td>${z.mae != null ? z.mae.toFixed(1) : '—'}</td><td>${z.bias != null ? z.bias.toFixed(1) : '—'}</td><td>${z.coverage != null ? (z.coverage * 100).toFixed(0) + '%' : '—'}</td></tr>`).join('');
+  el.innerHTML = `
+    <p><b>Deployed model:</b> ${q.model_version || '—'} · eval window ${q.window || '—'} (out-of-sample).</p>
+    <p><b>Headline:</b> MAE ${q.mae != null ? q.mae.toFixed(1) : '—'} €/MWh · pinball ${q.pinball != null ? q.pinball.toFixed(1) : '—'} ·
+       P10–P90 coverage ${q.coverage != null ? (q.coverage * 100).toFixed(0) + '%' : '—'} (target 80%) · bias ${q.bias != null ? q.bias.toFixed(1) : '—'} €/MWh.</p>
+    <table class="pd-table" style="margin:6px 0"><thead><tr><th>Zone</th><th>MAE</th><th>Bias</th><th>Coverage</th></tr></thead><tbody>${zr}</tbody></table>
+    <p><b>⚠ Use with care:</b></p>
+    <ul style="margin:4px 0 0 18px">${(q.caveats || []).map(c => `<li>${c}</li>`).join('')}</ul>`;
 }

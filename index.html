@@ -19,6 +19,7 @@
       <a class="nav-link" data-view="dam-spreads">DAM Spreads</a>
       <a class="nav-link" data-view="generation">Fundamental</a>
       <a class="nav-link" data-view="product-dynamics">Products</a>
+      <a class="nav-link" data-view="forecast">Forecast</a>
       <a class="nav-link" data-view="futures">Futures</a>
     </nav>
     <div class="topbar-meta">
@@ -459,6 +460,67 @@
 
       <div class="sp-tooltip" id="pd-tooltip" aria-hidden="true"></div>
     </section>
+
+    <!-- ===== Forecast (DAM price forecast P10/P50/P90) ===== -->
+    <section class="dynamics-panel hidden" id="forecast-view">
+      <div class="pd-toolbar">
+        <div class="sp-ctrl">
+          <label>Mode</label>
+          <div class="seg-toggle" role="group" aria-label="Mode">
+            <button type="button" class="seg-btn active" data-fc-mode="dam">DAM zone</button>
+            <button type="button" class="seg-btn" data-fc-mode="spread">Spread A−B</button>
+          </div>
+        </div>
+        <div class="sp-ctrl"><label for="fc-zone-a">Zone A</label><select id="fc-zone-a"></select></div>
+        <div class="sp-ctrl" id="fc-zoneb-wrap"><label for="fc-zone-b">Zone B</label><select id="fc-zone-b"></select></div>
+        <div class="sp-ctrl"><label for="fc-date">Date</label><select id="fc-date"></select></div>
+        <div class="sp-ctrl">
+          <label>Step</label>
+          <div class="seg-toggle" role="group" aria-label="Step">
+            <button type="button" class="seg-btn active" data-fc-gran="60">1 h</button>
+            <button type="button" class="seg-btn" data-fc-gran="15">15 min</button>
+          </div>
+        </div>
+        <div class="sp-ctrl">
+          <label>Run</label>
+          <div class="seg-toggle" role="group" aria-label="Run">
+            <button type="button" class="seg-btn active" data-fc-run="10:45">10:45</button>
+            <button type="button" class="seg-btn active" data-fc-run="10:00">10:00</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pd-status" id="fc-status">Loading…</div>
+
+      <div class="pd-block">
+        <div class="pd-chart-legend" id="fc-legend"></div>
+        <div class="pd-chart-wrap"><svg id="fc-chart"></svg></div>
+        <div class="pd-summary" id="fc-summary">—</div>
+      </div>
+
+      <div class="pd-block">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <h3 class="pd-block-title" id="fc-table-title">Hourly values</h3>
+          <button type="button" class="toggle-btn" id="fc-export">⬇ Export to Excel (CSV)</button>
+        </div>
+        <aside class="pd-table-wrap" style="width:100%"><table class="pd-table" id="fc-table"></table></aside>
+      </div>
+
+      <!-- Forecast quality & caveats (research panel) -->
+      <details class="pd-block" id="fc-quality-block">
+        <summary class="pd-block-title" style="cursor:pointer">📊 Forecast quality, version &amp; caveats</summary>
+        <div id="fc-quality">—</div>
+      </details>
+
+      <div class="pd-methodology">
+        Hybrid cost-stack + LightGBM-quantile forecast. P50 = central forecast, P10–P90 = 80% corridor
+        (conformal-calibrated). Actual overlays once published. Hours CET 1..24. Spread A−B is the
+        difference of the two zones' level forecasts. Two daily runs: 10:00 (early flow-based domain) and
+        10:45 (final). 15-min view repeats the hourly value until native 15-min lands.
+      </div>
+
+      <div class="sp-tooltip" id="fc-tooltip" aria-hidden="true"></div>
+    </section>
   </main>
 
   <footer class="footnote">
@@ -471,6 +533,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=38" type="module"></script>
+  <script src="app.js?v=41" type="module"></script>
 </body>
 </html>
