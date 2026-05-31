@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RedKlen — European Power Markets</title>
-  <link rel="stylesheet" href="style.css?v=38" />
+  <link rel="stylesheet" href="style.css?v=39" />
 </head>
 <body>
   <header class="topbar">
@@ -499,11 +499,20 @@
       </div>
 
       <div class="pd-block">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <h3 class="pd-block-title" id="fc-table-title">Hourly values</h3>
-          <button type="button" class="toggle-btn" id="fc-export">⬇ Export to Excel (CSV)</button>
+        <div id="fc-lower">
+          <div class="fc-table-block">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <h3 class="pd-block-title" id="fc-table-title">Hourly values</h3>
+              <button type="button" class="toggle-btn" id="fc-export">⬇ Export to Excel (CSV)</button>
+            </div>
+            <div class="pd-table-wrap"><table class="pd-table" id="fc-table"></table></div>
+          </div>
+          <aside id="fc-guide">
+            <h4>Що брати за базу (останні дні)</h4>
+            <div class="fc-guide-sub">За реальними помилками per година. Підсвічено в таблиці.</div>
+            <div id="fc-guide-body">—</div>
+          </aside>
         </div>
-        <aside class="pd-table-wrap" style="width:100%"><table class="pd-table" id="fc-table"></table></aside>
       </div>
 
       <!-- Forecast quality & caveats (research panel) -->
@@ -533,6 +542,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=41" type="module"></script>
+  <script src="app.js?v=42" type="module"></script>
 </body>
 </html>

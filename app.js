@@ -5601,42 +5601,92 @@ function renderForecast() {
     : (() => { const A = fcActual(za, date), B = fcActual(zb, date);
                return A.map((v, i) => (v == null || B[i] == null) ? null : +(v - B[i]).toFixed(1)); })();
   const title = fcState.mode === 'dam' ? `${za} · ${date}` : `${za} − ${zb} · ${date}`;
-  fcDrawChart(sPrim, runs.filter(r => r !== primary).map(getSeries).filter(Boolean), actual, title);
-  fcDrawTable(sPrim, actual);
+  const others = runs.filter(r => r !== primary).map(getSeries).filter(Boolean);
+  fcDrawChart(sPrim, others, actual, title);
+  const guide = (fcState.mode === 'dam' && fcState.payload.guide) ? fcState.payload.guide[za] : null;
+  fcDrawTable(sPrim, actual, guide);
+  fcRenderGuide(guide, fcState.mode === 'dam' ? za : null);
+  // two-runs visibility note
+  let runNote = '';
+  if (others.length) {
+    const same = JSON.stringify(others[0].p50) === JSON.stringify(sPrim.p50);
+    runNote = same ? ' · 10:00 ≡ 10:45 (ідентичні, поки модель не використовує JAO domain)'
+                   : ' · показано обидва прогони (10:45 суцільна, 10:00 — помаранчевий пунктир)';
+  }
   const valid = sPrim.p50.filter(v => v != null);
   if (sumEl) sumEl.textContent = valid.length
     ? `Baseload P50 ≈ ${(valid.reduce((a, b) => a + b, 0) / valid.length).toFixed(1)} €/MWh · run ${primary}`
-    + (fcState.mode === 'spread' ? ' · spread = difference of level forecasts' : '') : '—';
+    + (fcState.mode === 'spread' ? ' · spread = різниця рівнів' : '') + runNote : '—';
+}
+
+// Right-side self-guide: group consecutive hours with same recommended quantile.
+function fcRenderGuide(guide, zone) {
+  const el = document.getElementById('fc-guide-body'); if (!el) return;
+  if (!guide || !zone) {
+    el.innerHTML = '<p style="color:#5b6271;font-size:12px;margin:0">Довідник доступний у режимі DAM (по країні).</p>';
+    return;
+  }
+  // build bands of consecutive same-rec hours
+  const bands = []; let cur = null;
+  for (let h = 1; h <= 24; h++) {
+    const g = guide[h - 1];
+    const rec = g ? g.rec : null;
+    if (cur && cur.rec === rec) { cur.to = h; cur.biasSum += (g ? g.bias : 0); cur.k++; }
+    else { if (cur) bands.push(cur); cur = { from: h, to: h, rec, biasSum: g ? g.bias : 0, k: 1 }; }
+  }
+  if (cur) bands.push(cur);
+  const why = b => {
+    if (!b.rec) return '<span class="why">нема оцінки</span>';
+    const bias = (b.biasSum / b.k);
+    if (b.rec === 'P90') return `<span class="why">P50 занижує ~+${bias.toFixed(0)}€ → бери верх</span>`;
+    if (b.rec === 'P10') return `<span class="why">P50 завищує ~${bias.toFixed(0)}€ → бери низ</span>`;
+    return `<span class="why">P50 точний (±${Math.abs(bias).toFixed(0)}€)</span>`;
+  };
+  el.innerHTML = bands.filter(b => b.rec).map(b =>
+    `<div class="fc-guide-band"><span class="h">Год ${b.from}${b.to > b.from ? '–' + b.to : ''}</span>`
+    + `<span style="display:flex;gap:8px;align-items:center"><span class="fc-q ${b.rec}">${b.rec}</span>${why(b)}</span></div>`
+  ).join('') || '<p style="color:#5b6271;font-size:12px;margin:0">Замало історії оцінки.</p>';
 }
 
 function fcDrawChart(s, others, act, title) {
-  const W = 1040, H = 420, padL = 46, padR = 14, padT = 26, padB = 28;
+  const W = 1180, H = 460, padL = 52, padR = 60, padT = 30, padB = 36;
+  const INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', AMBER = '#e8a33d';
   const p50 = fcExpand(s.p50), p10 = fcExpand(s.p10), p90 = fcExpand(s.p90), a = fcExpand(act);
   const n = p50.length, xs = i => padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1));
   const vals = [...p10, ...p90, ...a].filter(v => v != null);
   let lo = Math.min(...vals), hi = Math.max(...vals); if (!isFinite(lo)) { lo = 0; hi = 1; }
-  const pad = (hi - lo) * 0.1 || 5; lo -= pad; hi += pad;
+  const pad = (hi - lo) * 0.12 || 5; lo -= pad; hi += pad;
   const ys = v => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
   const line = arr => { let d = '', st = false; arr.forEach((v, i) => { if (v == null) { st = false; return; } d += (st ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(v).toFixed(1) + ' '; st = true; }); return d; };
   let band = ''; { let up = '', started = false;
     for (let i = 0; i < n; i++) { if (p90[i] == null) continue; up += (started ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(p90[i]).toFixed(1) + ' '; started = true; }
     for (let i = n - 1; i >= 0; i--) { if (p10[i] == null) continue; up += 'L' + xs(i).toFixed(1) + ' ' + ys(p10[i]).toFixed(1) + ' '; } band = up + 'Z'; }
-  const gy = []; for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4; gy.push(`<line x1="${padL}" y1="${ys(v).toFixed(1)}" x2="${W - padR}" y2="${ys(v).toFixed(1)}" stroke="#2a3543"/><text x="${padL - 6}" y="${(ys(v) + 3).toFixed(1)}" fill="#8a97a8" font-size="10" text-anchor="end">${v.toFixed(0)}</text>`); }
+  const gy = []; for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4; gy.push(`<line x1="${padL}" y1="${ys(v).toFixed(1)}" x2="${W - padR}" y2="${ys(v).toFixed(1)}" stroke="${GRID}"/><text x="${padL - 7}" y="${(ys(v) + 3).toFixed(1)}" fill="${MUT}" font-size="11" text-anchor="end">${v.toFixed(0)}</text>`); }
   const step = fcState.gran === 60 ? 2 : 8; const xt = [];
-  for (let i = 0; i < n; i += step) { const hr = fcState.gran === 60 ? i + 1 : Math.floor(i / 4) + 1; xt.push(`<text x="${xs(i).toFixed(1)}" y="${H - 9}" fill="#8a97a8" font-size="10" text-anchor="middle">${hr}</text>`); }
-  const otherLines = (others || []).map(o => `<path d="${line(fcExpand(o.p50))}" fill="none" stroke="${FC_BLUE}" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.6"/>`).join('');
+  for (let i = 0; i < n; i += step) { const hr = fcState.gran === 60 ? i + 1 : Math.floor(i / 4) + 1; xt.push(`<text x="${xs(i).toFixed(1)}" y="${H - 12}" fill="${MUT}" font-size="11" text-anchor="middle">${hr}</text>`); }
+  // sparse data labels: P50 peak + trough + endpoints (not overloading)
+  const idxs = p50.map((v, i) => [v, i]).filter(x => x[0] != null).map(x => x[1]);
+  const lbl = [];
+  if (idxs.length) {
+    const mx = idxs.reduce((b, i) => p50[i] > p50[b] ? i : b, idxs[0]);
+    const mn = idxs.reduce((b, i) => p50[i] < p50[b] ? i : b, idxs[0]);
+    [...new Set([idxs[0], mn, mx, idxs[idxs.length - 1]])].forEach(i => {
+      const above = p50[i] >= (lo + hi) / 2;
+      lbl.push(`<text x="${xs(i).toFixed(1)}" y="${(ys(p50[i]) + (above ? -7 : 14)).toFixed(1)}" fill="${FC_BLUE}" font-size="11" font-weight="700" text-anchor="middle" paint-order="stroke" stroke="#fff" stroke-width="3">${p50[i].toFixed(0)}</text>`);
+    });
+  }
+  const otherLines = (others || []).map(o => `<path d="${line(fcExpand(o.p50))}" fill="none" stroke="${AMBER}" stroke-width="2" stroke-dasharray="5 3"/>`).join('');
   const actLine = a.some(v => v != null) ? `<path d="${line(a)}" fill="none" stroke="${FC_RED}" stroke-width="2"/>` : '';
   const svg = document.getElementById('fc-chart');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', '100%');
-  svg.innerHTML = `<text x="${padL}" y="15" fill="#e8edf3" font-size="13">${title}</text>`
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('width', '100%');
+  svg.innerHTML = `<text x="${padL}" y="16" fill="${INK}" font-size="13" font-weight="600">${title}</text>`
     + gy.join('') + xt.join('')
-    + `<path d="${band}" fill="${FC_BLUE}" fill-opacity="0.18" stroke="none"/>`
-    + `<path d="${line(p50)}" fill="none" stroke="${FC_BLUE}" stroke-width="2.2"/>`
-    + otherLines + actLine
-    + `<text x="${W - padR}" y="15" fill="#8a97a8" font-size="10" text-anchor="end">€/MWh · CET 1..24</text>`
-    + `<g id="fc-guide" style="pointer-events:none"></g>`
+    + `<path d="${band}" fill="${FC_BLUE}" fill-opacity="0.15" stroke="none"/>`
+    + `<path d="${line(p50)}" fill="none" stroke="${FC_BLUE}" stroke-width="2.4"/>`
+    + otherLines + actLine + lbl.join('')
+    + `<text x="${W - padR}" y="16" fill="${MUT}" font-size="10" text-anchor="end">€/MWh · CET 1..24</text>`
+    + `<g id="fc-cursor" style="pointer-events:none"></g>`
     + `<rect id="fc-hit" x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent" style="cursor:crosshair"/>`;
-  // store geometry for interactive hover
   fcState.chart = { p50, p10, p90, a, lo, hi, padL, padR, padT, padB, W, H, n, xs, ys };
   fcBindHover();
 }
@@ -5659,7 +5709,7 @@ function fcBindHover() {
     const x = c.xs(i);
     const hr = fcState.gran === 60 ? (i + 1) : (Math.floor(i / 4) + 1);
     const slot = fcState.gran === 60 ? `Hour ${hr}` : `${String(hr - 1).padStart(2, '0')}:${String((i % 4) * 15).padStart(2, '0')}`;
-    const g = document.getElementById('fc-guide');
+    const g = document.getElementById('fc-cursor');
     const dot = (v, col) => v == null ? '' : `<circle cx="${x.toFixed(1)}" cy="${c.ys(v).toFixed(1)}" r="3.2" fill="${col}"/>`;
     g.innerHTML = `<line x1="${x.toFixed(1)}" y1="${c.padT}" x2="${x.toFixed(1)}" y2="${c.H - c.padB}" stroke="#8a97a8" stroke-dasharray="3 3"/>`
       + dot(c.p50[i], FC_BLUE) + dot(c.a[i], FC_RED);
@@ -5675,29 +5725,32 @@ function fcBindHover() {
   };
   svg.addEventListener('mousemove', move);
   svg.addEventListener('mouseleave', () => {
-    const g = document.getElementById('fc-guide'); if (g) g.innerHTML = '';
+    const g = document.getElementById('fc-cursor'); if (g) g.innerHTML = '';
     if (tip) { tip.classList.remove('visible'); tip.setAttribute('aria-hidden', 'true'); }
   });
 }
 
-function fcDrawTable(s, act) {
+function fcDrawTable(s, act, guide) {
   const q15 = fcState.gran === 15;
   const label = (h, k) => q15 ? `${String(h - 1).padStart(2, '0')}:${String(k * 15).padStart(2, '0')}` : String(h);
   const fmt = v => v == null ? '—' : v.toFixed(1);
+  const cls = (col, rec) => rec === col ? ' class="fc-rec"' : '';   // highlight recommended quantile
   const rows = [];
-  const exp = [['slot_CET', 'P10', 'P50', 'P90', 'actual', 'err']];   // CSV buffer
+  const exp = [['slot_CET', 'P10', 'P50', 'P90', 'actual', 'err', 'base']];
   for (let h = 1; h <= 24; h++) {
     const i = h - 1;
+    const rec = guide && guide[i] ? guide[i].rec : null;        // 'P10'|'P50'|'P90'
+    const baseCell = rec ? `<span class="fc-q ${rec}">${rec}</span>` : '—';
     const sub = q15 ? [0, 1, 2, 3] : [0];
     for (const k of sub) {
       const f = s.p50[i], av = act[i];
       const err = (f != null && av != null) ? (av - f).toFixed(1) : '';
-      rows.push(`<tr><td>${label(h, k)}</td><td>${fmt(s.p10[i])}</td><td><b>${fmt(f)}</b></td><td>${fmt(s.p90[i])}</td><td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td></tr>`);
-      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i], av == null ? '' : av, err]);
+      rows.push(`<tr><td>${label(h, k)}</td><td${cls('P10', rec)}>${fmt(s.p10[i])}</td><td${cls('P50', rec)}>${fmt(f)}</td><td${cls('P90', rec)}>${fmt(s.p90[i])}</td><td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td><td>${baseCell}</td></tr>`);
+      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i], av == null ? '' : av, err, rec || '']);
     }
   }
   document.getElementById('fc-table').innerHTML =
-    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th><th>Actual</th><th>Err</th></tr></thead><tbody>${rows.join('')}</tbody>`;
+    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th><th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th></tr></thead><tbody>${rows.join('')}</tbody>`;
   fcState.exportRows = exp;
   fcState.exportName = (fcState.mode === 'dam'
     ? document.getElementById('fc-zone-a').value
