@@ -5513,7 +5513,7 @@ async function initForecastView() {
     fcState.payload = await r.json();
   } catch (e) {
     if (st) { st.textContent = 'No forecast data yet: ' + (e.message || e); st.classList.add('error'); }
-    fcState.payload = { zones: [], dates: [], runs: ['10:45', '10:00'], data: {} };
+    fcState.payload = { zones: [], dates: [], runs: ['10:45', '09:30'], data: {} };
     return;
   }
   const P = fcState.payload;
@@ -5612,8 +5612,8 @@ function renderForecast() {
   let runNote = '';
   if (others.length) {
     const same = JSON.stringify(others[0].p50) === JSON.stringify(sPrim.p50);
-    runNote = same ? ' · 10:00 ≡ 10:45 (ідентичні, поки модель не використовує JAO domain)'
-                   : ' · показано обидва прогони (10:45 суцільна, 10:00 — помаранчевий пунктир)';
+    runNote = same ? ' · 09:30 ≡ 10:45 (ідентичні, поки модель не використовує JAO domain)'
+                   : ' · показано обидва прогони (10:45 суцільна, 09:30 — помаранчевий пунктир)';
   }
   const valid = sPrim.p50.filter(v => v != null);
   if (sumEl) sumEl.textContent = valid.length
@@ -5751,8 +5751,17 @@ function fcDrawTable(s, act, guide) {
       exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i], av == null ? '' : av, err, rec || '']);
     }
   }
+  // Baseload average row (mean over the 24 hours) — quick read of the day's level.
+  const avg = arr => { const v = (arr || []).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const aP10 = avg(s.p10), aP50 = avg(s.p50), aP90 = avg(s.p90), aAct = avg(act);
+  const aErr = (aP50 != null && aAct != null) ? (aAct - aP50).toFixed(1) : '';
+  const foot = `<tfoot><tr style="font-weight:700;border-top:2px solid #c9d2dd;background:#f3f6fa">`
+    + `<td>Avg baseload</td><td>${fmt(aP10)}</td><td>${fmt(aP50)}</td><td>${fmt(aP90)}</td>`
+    + `<td>${aAct == null ? '<span style="color:#8a97a8">—</span>' : fmt(aAct)}</td><td>${aErr}</td><td></td></tr></tfoot>`;
+  exp.push(['Avg_baseload', aP10 == null ? '' : aP10.toFixed(2), aP50 == null ? '' : aP50.toFixed(2),
+            aP90 == null ? '' : aP90.toFixed(2), aAct == null ? '' : aAct.toFixed(2), aErr, '']);
   document.getElementById('fc-table').innerHTML =
-    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th><th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th></tr></thead><tbody>${rows.join('')}</tbody>`;
+    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th><th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th></tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
   fcState.exportRows = exp;
   fcState.exportName = (fcState.mode === 'dam'
     ? document.getElementById('fc-zone-a').value
