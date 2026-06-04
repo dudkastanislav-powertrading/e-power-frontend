@@ -5525,7 +5525,23 @@ async function initForecastView() {
   if (P.zones.includes('RO')) aSel.value = 'RO';
   if (P.zones.includes('HU')) bSel.value = 'HU';
   dSel.innerHTML = P.dates.map(opt).join('');
-  if (P.dates.length) dSel.value = P.dates[P.dates.length - 1];
+  // Default to the latest date that has BOTH forecast AND actuals → user lands
+  // on a meaningful forecast-vs-reality view. Pure last-date defaulted to D+1
+  // (tomorrow) which has no actuals yet (DAM not settled / not yet ingested),
+  // so the red Actual line never appeared on first load and looked broken.
+  if (P.dates.length) {
+    const hasActual = d => P.zones.some(z => {
+      const e = P.data[z] && P.data[z][d];
+      return e && Array.isArray(e.actual) && e.actual.some(v => v != null);
+    });
+    const hasForecast = d => P.zones.some(z => {
+      const e = P.data[z] && P.data[z][d];
+      return e && (e['10:45'] || e['09:30']);
+    });
+    const def = [...P.dates].reverse().find(d => hasActual(d) && hasForecast(d))
+              || P.dates[P.dates.length - 1];
+    dSel.value = def;
+  }
   fcSyncZoneB();
 
   // single-select groups
