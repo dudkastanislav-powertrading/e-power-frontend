@@ -5545,6 +5545,8 @@ async function initForecastView() {
   // run group = multi-toggle
   document.querySelectorAll('[data-fc-run]').forEach(btn =>
     btn.addEventListener('click', () => { btn.classList.toggle('active'); renderForecast(); }));
+  const jaoCb = document.getElementById('fc-jao');
+  if (jaoCb) jaoCb.addEventListener('change', renderForecast);
   [aSel, bSel, dSel].forEach(s => s.addEventListener('change', renderForecast));
   const exp = document.getElementById('fc-export');
   if (exp) exp.addEventListener('click', fcExportCsv);
@@ -5569,6 +5571,11 @@ function fcSeries(zone, date, run) {
 function fcActual(zone, date) {
   const z = fcState.payload.data[zone];
   return (z && z[date] && z[date].actual) ? z[date].actual : new Array(24).fill(null);
+}
+function fcJaoSeries(zone, date, run) {   // shadow JAO challenger track
+  const J = fcState.payload.jao; if (!J) return null;
+  const z = J[zone];
+  return (z && z[date] && z[date][run]) ? z[date][run] : null;
 }
 function fcSpread(a, b, date, run) {
   const A = fcSeries(a, date, run), B = fcSeries(b, date, run);
@@ -5604,6 +5611,12 @@ function renderForecast() {
                return A.map((v, i) => (v == null || B[i] == null) ? null : +(v - B[i]).toFixed(1)); })();
   const title = fcState.mode === 'dam' ? `${za} · ${date}` : `${za} − ${zb} · ${date}`;
   const others = runs.filter(r => r !== primary).map(getSeries).filter(Boolean);
+  const jaoOn = !!(document.getElementById('fc-jao') && document.getElementById('fc-jao').checked);
+  let jaoS = null;
+  if (jaoOn && fcState.mode === 'dam') {        // overlay shadow JAO challenger P50
+    jaoS = fcJaoSeries(za, date, primary);
+    if (jaoS) others.push(jaoS);
+  }
   fcDrawChart(sPrim, others, actual, title);
   const guide = (fcState.mode === 'dam' && fcState.payload.guide) ? fcState.payload.guide[za] : null;
   fcDrawTable(sPrim, actual, guide);
@@ -5614,6 +5627,11 @@ function renderForecast() {
     const same = JSON.stringify(others[0].p50) === JSON.stringify(sPrim.p50);
     runNote = same ? ' · 09:30 ≡ 10:45 (ідентичні, поки модель не використовує JAO domain)'
                    : ' · показано обидва прогони (10:45 суцільна, 09:30 — помаранчевий пунктир)';
+  }
+  if (jaoS) {
+    const dl = sPrim.p50.map((v, i) => (v != null && jaoS.p50[i] != null) ? Math.abs(v - jaoS.p50[i]) : null).filter(x => x != null);
+    const md = dl.length ? dl.reduce((a, b) => a + b, 0) / dl.length : 0;
+    runNote += ` · JAO-challenger (тіньовий, не промоут): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
   }
   const valid = sPrim.p50.filter(v => v != null);
   if (sumEl) sumEl.textContent = valid.length
