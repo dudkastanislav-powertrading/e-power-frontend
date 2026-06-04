@@ -5619,7 +5619,7 @@ function renderForecast() {
   }
   fcDrawChart(sPrim, others, actual, title);
   const guide = (fcState.mode === 'dam' && fcState.payload.guide) ? fcState.payload.guide[za] : null;
-  fcDrawTable(sPrim, actual, guide);
+  fcDrawTable(sPrim, actual, guide, jaoS);
   fcRenderGuide(guide, fcState.mode === 'dam' ? za : null);
   // two-runs visibility note
   let runNote = '';
@@ -5750,13 +5750,14 @@ function fcBindHover() {
   });
 }
 
-function fcDrawTable(s, act, guide) {
+function fcDrawTable(s, act, guide, jao) {
   const q15 = fcState.gran === 15;
   const label = (h, k) => q15 ? `${String(h - 1).padStart(2, '0')}:${String(k * 15).padStart(2, '0')}` : String(h);
   const fmt = v => v == null ? '—' : v.toFixed(1);
   const cls = (col, rec) => rec === col ? ' class="fc-rec"' : '';   // highlight recommended quantile
+  const jaoTh = jao ? '<th title="JAO challenger P50 (тіньовий) + Δ до champion" style="color:#b8860b">JAO P50</th>' : '';
   const rows = [];
-  const exp = [['slot_CET', 'P10', 'P50', 'P90', 'actual', 'err', 'base']];
+  const exp = [['slot_CET', 'P10', 'P50', 'P90', 'actual', 'err', 'base'].concat(jao ? ['jao_p50'] : [])];
   for (let h = 1; h <= 24; h++) {
     const i = h - 1;
     const rec = guide && guide[i] ? guide[i].rec : null;        // 'P10'|'P50'|'P90'
@@ -5765,21 +5766,26 @@ function fcDrawTable(s, act, guide) {
     for (const k of sub) {
       const f = s.p50[i], av = act[i];
       const err = (f != null && av != null) ? (av - f).toFixed(1) : '';
-      rows.push(`<tr><td>${label(h, k)}</td><td${cls('P10', rec)}>${fmt(s.p10[i])}</td><td${cls('P50', rec)}>${fmt(f)}</td><td${cls('P90', rec)}>${fmt(s.p90[i])}</td><td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td><td>${baseCell}</td></tr>`);
-      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i], av == null ? '' : av, err, rec || '']);
+      const jv = jao ? jao.p50[i] : null;
+      const jd = (jao && jv != null && f != null) ? (jv - f >= 0 ? '+' : '') + (jv - f).toFixed(1) : '';
+      const jaoTd = jao ? `<td style="color:#b8860b">${fmt(jv)}${jd ? ` <span style="color:#8a97a8;font-size:11px">(${jd})</span>` : ''}</td>` : '';
+      rows.push(`<tr><td>${label(h, k)}</td><td${cls('P10', rec)}>${fmt(s.p10[i])}</td><td${cls('P50', rec)}>${fmt(f)}</td><td${cls('P90', rec)}>${fmt(s.p90[i])}</td><td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td><td>${baseCell}</td>${jaoTd}</tr>`);
+      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i], av == null ? '' : av, err, rec || ''].concat(jao ? [jv == null ? '' : jv] : []));
     }
   }
   // Baseload average row (mean over the 24 hours) — quick read of the day's level.
   const avg = arr => { const v = (arr || []).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
   const aP10 = avg(s.p10), aP50 = avg(s.p50), aP90 = avg(s.p90), aAct = avg(act);
   const aErr = (aP50 != null && aAct != null) ? (aAct - aP50).toFixed(1) : '';
+  const aJao = jao ? avg(jao.p50) : null;
+  const jaoFootTd = jao ? `<td style="color:#b8860b">${fmt(aJao)}</td>` : '';
   const foot = `<tfoot><tr style="font-weight:700;border-top:2px solid #c9d2dd;background:#f3f6fa">`
     + `<td>Avg baseload</td><td>${fmt(aP10)}</td><td>${fmt(aP50)}</td><td>${fmt(aP90)}</td>`
-    + `<td>${aAct == null ? '<span style="color:#8a97a8">—</span>' : fmt(aAct)}</td><td>${aErr}</td><td></td></tr></tfoot>`;
+    + `<td>${aAct == null ? '<span style="color:#8a97a8">—</span>' : fmt(aAct)}</td><td>${aErr}</td><td></td>${jaoFootTd}</tr></tfoot>`;
   exp.push(['Avg_baseload', aP10 == null ? '' : aP10.toFixed(2), aP50 == null ? '' : aP50.toFixed(2),
-            aP90 == null ? '' : aP90.toFixed(2), aAct == null ? '' : aAct.toFixed(2), aErr, '']);
+            aP90 == null ? '' : aP90.toFixed(2), aAct == null ? '' : aAct.toFixed(2), aErr, ''].concat(jao ? [aJao == null ? '' : aJao.toFixed(2)] : []));
   document.getElementById('fc-table').innerHTML =
-    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th><th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th></tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
+    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th><th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th>${jaoTh}</tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
   fcState.exportRows = exp;
   fcState.exportName = (fcState.mode === 'dam'
     ? document.getElementById('fc-zone-a').value
