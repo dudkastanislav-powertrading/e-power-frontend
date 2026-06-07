@@ -1059,6 +1059,9 @@ button { font: inherit; cursor: pointer; }
   background: #f7f8fa;
 }
 .pd-table td.pd-na  { color: #cdd2da; font-weight: 400; }
+/* Footer (Avg baseload) — must mirror tbody alignment so averages sit under their columns */
+.pd-table tfoot td { padding: 4px 2px; text-align: right; white-space: nowrap; }
+.pd-table tfoot td:first-child { text-align: left; padding-left: 4px; }
 
 /* Heat-map row extreme accents */
 .pd-table td.pd-max { font-weight: 800; color: #185a2c; }

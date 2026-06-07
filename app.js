@@ -5629,11 +5629,10 @@ function renderForecast() {
   const others = runs.filter(r => r !== primary).map(getSeries).filter(Boolean);
   const jaoOn = !!(document.getElementById('fc-jao') && document.getElementById('fc-jao').checked);
   let jaoS = null;
-  if (jaoOn && fcState.mode === 'dam') {        // overlay shadow JAO challenger P50
+  if (jaoOn && fcState.mode === 'dam') {        // shadow JAO challenger P50 — drawn as a distinct green line (not amber dashed)
     jaoS = fcJaoSeries(za, date, primary);
-    if (jaoS) others.push(jaoS);
   }
-  fcDrawChart(sPrim, others, actual, title);
+  fcDrawChart(sPrim, others, actual, title, jaoS);
   const guide = (fcState.mode === 'dam' && fcState.payload.guide) ? fcState.payload.guide[za] : null;
   fcDrawTable(sPrim, actual, guide, jaoS);
   fcRenderGuide(guide, fcState.mode === 'dam' ? za : null);
@@ -5684,9 +5683,9 @@ function fcRenderGuide(guide, zone) {
   ).join('') || '<p style="color:#5b6271;font-size:12px;margin:0">Замало історії оцінки.</p>';
 }
 
-function fcDrawChart(s, others, act, title) {
+function fcDrawChart(s, others, act, title, jao) {
   const W = 1180, H = 460, padL = 52, padR = 60, padT = 30, padB = 36;
-  const INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', AMBER = '#e8a33d';
+  const INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', AMBER = '#e8a33d', JGREEN = '#1e9e57';
   const p50 = fcExpand(s.p50), p10 = fcExpand(s.p10), p90 = fcExpand(s.p90), a = fcExpand(act);
   const n = p50.length, xs = i => padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1));
   const vals = [...p10, ...p90, ...a].filter(v => v != null);
@@ -5712,6 +5711,8 @@ function fcDrawChart(s, others, act, title) {
     });
   }
   const otherLines = (others || []).map(o => `<path d="${line(fcExpand(o.p50))}" fill="none" stroke="${AMBER}" stroke-width="2" stroke-dasharray="5 3"/>`).join('');
+  const jaoExp = fcExpand(jao && jao.p50);
+  const jaoLine = (jaoExp && jaoExp.some(v => v != null)) ? `<path d="${line(jaoExp)}" fill="none" stroke="${JGREEN}" stroke-width="2.2"/>` : '';
   const actLine = a.some(v => v != null) ? `<path d="${line(a)}" fill="none" stroke="${FC_RED}" stroke-width="2"/>` : '';
   const svg = document.getElementById('fc-chart');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('width', '100%');
@@ -5719,11 +5720,11 @@ function fcDrawChart(s, others, act, title) {
     + gy.join('') + xt.join('')
     + `<path d="${band}" fill="${FC_BLUE}" fill-opacity="0.15" stroke="none"/>`
     + `<path d="${line(p50)}" fill="none" stroke="${FC_BLUE}" stroke-width="2.4"/>`
-    + otherLines + actLine + lbl.join('')
+    + otherLines + jaoLine + actLine + lbl.join('')
     + `<text x="${W - padR}" y="16" fill="${MUT}" font-size="10" text-anchor="end">€/MWh · CET 1..24</text>`
     + `<g id="fc-cursor" style="pointer-events:none"></g>`
     + `<rect id="fc-hit" x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent" style="cursor:crosshair"/>`;
-  fcState.chart = { p50, p10, p90, a, lo, hi, padL, padR, padT, padB, W, H, n, xs, ys };
+  fcState.chart = { p50, p10, p90, a, jao: jaoExp, lo, hi, padL, padR, padT, padB, W, H, n, xs, ys };
   fcBindHover();
 }
 
@@ -5747,11 +5748,13 @@ function fcBindHover() {
     const slot = fcState.gran === 60 ? `Hour ${hr}` : `${String(hr - 1).padStart(2, '0')}:${String((i % 4) * 15).padStart(2, '0')}`;
     const g = document.getElementById('fc-cursor');
     const dot = (v, col) => v == null ? '' : `<circle cx="${x.toFixed(1)}" cy="${c.ys(v).toFixed(1)}" r="3.2" fill="${col}"/>`;
+    const jv = c.jao ? c.jao[i] : null;
     g.innerHTML = `<line x1="${x.toFixed(1)}" y1="${c.padT}" x2="${x.toFixed(1)}" y2="${c.H - c.padB}" stroke="#8a97a8" stroke-dasharray="3 3"/>`
-      + dot(c.p50[i], FC_BLUE) + dot(c.a[i], FC_RED);
+      + dot(c.p50[i], FC_BLUE) + dot(jv, '#1e9e57') + dot(c.a[i], FC_RED);
     const f = c.p50[i], av = c.a[i], fmt = v => v == null ? '—' : v.toFixed(1) + ' €';
     if (tip) {
       tip.innerHTML = `<b>${slot} CET</b><br>P50 ${fmt(f)}<br>P10–P90 ${fmt(c.p10[i])} … ${fmt(c.p90[i])}`
+        + (jv != null ? `<br><span style="color:#1e9e57">JAO P50 ${fmt(jv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(jv - f >= 0 ? '+' : '') + (jv - f).toFixed(1)})</span>` : '') : '')
         + (av != null ? `<br>Actual ${fmt(av)}` + (f != null ? ` <span style="color:#8a97a8">(err ${(av - f).toFixed(1)})</span>` : '') : '');
       tip.classList.add('visible'); tip.setAttribute('aria-hidden', 'false');
       const vw = window.innerWidth, vh = window.innerHeight, tw = tip.offsetWidth, th = tip.offsetHeight;
@@ -5771,9 +5774,9 @@ function fcDrawTable(s, act, guide, jao) {
   const label = (h, k) => q15 ? `${String(h - 1).padStart(2, '0')}:${String(k * 15).padStart(2, '0')}` : String(h);
   const fmt = v => v == null ? '—' : v.toFixed(1);
   const cls = (col, rec) => rec === col ? ' class="fc-rec"' : '';   // highlight recommended quantile
-  const jaoTh = jao ? '<th title="JAO challenger P50 (тіньовий) + Δ до champion" style="color:#b8860b">JAO P50</th>' : '';
+  const jaoTh = jao ? '<th title="JAO challenger P50 (тіньовий) + Δ до champion" style="color:#1e9e57">JAO P50</th>' : '';
   const rows = [];
-  const exp = [['slot_CET', 'P10', 'P50', 'P90', 'actual', 'err', 'base'].concat(jao ? ['jao_p50'] : [])];
+  const exp = [['slot_CET', 'P10', 'P50', 'P90'].concat(jao ? ['jao_p50'] : []).concat(['actual', 'err', 'base'])];
   for (let h = 1; h <= 24; h++) {
     const i = h - 1;
     const rec = guide && guide[i] ? guide[i].rec : null;        // 'P10'|'P50'|'P90'
@@ -5784,9 +5787,9 @@ function fcDrawTable(s, act, guide, jao) {
       const err = (f != null && av != null) ? (av - f).toFixed(1) : '';
       const jv = jao ? jao.p50[i] : null;
       const jd = (jao && jv != null && f != null) ? (jv - f >= 0 ? '+' : '') + (jv - f).toFixed(1) : '';
-      const jaoTd = jao ? `<td style="color:#b8860b">${fmt(jv)}${jd ? ` <span style="color:#8a97a8;font-size:11px">(${jd})</span>` : ''}</td>` : '';
-      rows.push(`<tr><td>${label(h, k)}</td><td${cls('P10', rec)}>${fmt(s.p10[i])}</td><td${cls('P50', rec)}>${fmt(f)}</td><td${cls('P90', rec)}>${fmt(s.p90[i])}</td><td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td><td>${baseCell}</td>${jaoTd}</tr>`);
-      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i], av == null ? '' : av, err, rec || ''].concat(jao ? [jv == null ? '' : jv] : []));
+      const jaoTd = jao ? `<td style="color:#1e9e57">${fmt(jv)}${jd ? ` <span style="color:#8a97a8;font-size:11px">(${jd})</span>` : ''}</td>` : '';
+      rows.push(`<tr><td>${label(h, k)}</td><td${cls('P10', rec)}>${fmt(s.p10[i])}</td><td${cls('P50', rec)}>${fmt(f)}</td><td${cls('P90', rec)}>${fmt(s.p90[i])}</td>${jaoTd}<td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td><td>${baseCell}</td></tr>`);
+      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i]].concat(jao ? [jv == null ? '' : jv] : []).concat([av == null ? '' : av, err, rec || '']));
     }
   }
   // Baseload average row (mean over the 24 hours) — quick read of the day's level.
@@ -5794,21 +5797,24 @@ function fcDrawTable(s, act, guide, jao) {
   const aP10 = avg(s.p10), aP50 = avg(s.p50), aP90 = avg(s.p90), aAct = avg(act);
   const aErr = (aP50 != null && aAct != null) ? (aAct - aP50).toFixed(1) : '';
   const aJao = jao ? avg(jao.p50) : null;
-  const jaoFootTd = jao ? `<td style="color:#b8860b">${fmt(aJao)}</td>` : '';
+  const jaoFootTd = jao ? `<td style="color:#1e9e57">${fmt(aJao)}</td>` : '';
   const foot = `<tfoot><tr style="font-weight:700;border-top:2px solid #c9d2dd;background:#f3f6fa">`
-    + `<td>Avg baseload</td><td>${fmt(aP10)}</td><td>${fmt(aP50)}</td><td>${fmt(aP90)}</td>`
-    + `<td>${aAct == null ? '<span style="color:#8a97a8">—</span>' : fmt(aAct)}</td><td>${aErr}</td><td></td>${jaoFootTd}</tr></tfoot>`;
+    + `<td>Avg baseload</td><td>${fmt(aP10)}</td><td>${fmt(aP50)}</td><td>${fmt(aP90)}</td>${jaoFootTd}`
+    + `<td>${aAct == null ? '<span style="color:#8a97a8">—</span>' : fmt(aAct)}</td><td>${aErr}</td><td></td></tr></tfoot>`;
   exp.push(['Avg_baseload', aP10 == null ? '' : aP10.toFixed(2), aP50 == null ? '' : aP50.toFixed(2),
-            aP90 == null ? '' : aP90.toFixed(2), aAct == null ? '' : aAct.toFixed(2), aErr, ''].concat(jao ? [aJao == null ? '' : aJao.toFixed(2)] : []));
+            aP90 == null ? '' : aP90.toFixed(2)].concat(jao ? [aJao == null ? '' : aJao.toFixed(2)] : [])
+            .concat([aAct == null ? '' : aAct.toFixed(2), aErr, '']));
   document.getElementById('fc-table').innerHTML =
-    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th><th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th>${jaoTh}</tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
+    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th>${jaoTh}<th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th></tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
   fcState.exportRows = exp;
   fcState.exportName = (fcState.mode === 'dam'
     ? document.getElementById('fc-zone-a').value
     : document.getElementById('fc-zone-a').value + '-' + document.getElementById('fc-zone-b').value)
     + '_' + document.getElementById('fc-date').value + (q15 ? '_15min' : '_hourly');
   const lg = document.getElementById('fc-legend');
-  if (lg) lg.innerHTML = `<span style="color:${FC_BLUE}">■ P50 forecast</span> &nbsp; <span style="color:${FC_BLUE};opacity:.5">▮ P10–P90</span> &nbsp; <span style="color:${FC_RED}">■ Actual</span>`;
+  if (lg) lg.innerHTML = `<span style="color:${FC_BLUE}">■ P50 forecast</span> &nbsp; <span style="color:${FC_BLUE};opacity:.5">▮ P10–P90</span>`
+    + (jao ? ` &nbsp; <span style="color:#1e9e57">━ JAO P50</span>` : '')
+    + ` &nbsp; <span style="color:${FC_RED}">■ Actual</span>`;
 }
 
 function fcExportCsv() {
