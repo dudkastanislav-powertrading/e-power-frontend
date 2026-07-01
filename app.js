@@ -5563,6 +5563,8 @@ async function initForecastView() {
     btn.addEventListener('click', () => { btn.classList.toggle('active'); renderForecast(); }));
   const jaoCb = document.getElementById('fc-jao');
   if (jaoCb) jaoCb.addEventListener('change', renderForecast);
+  const fundCb = document.getElementById('fc-fund');
+  if (fundCb) fundCb.addEventListener('change', renderForecast);
   [aSel, bSel, dSel].forEach(s => s.addEventListener('change', renderForecast));
   const exp = document.getElementById('fc-export');
   if (exp) exp.addEventListener('click', fcExportCsv);
@@ -5591,6 +5593,11 @@ function fcActual(zone, date) {
 function fcJaoSeries(zone, date, run) {   // shadow JAO challenger track
   const J = fcState.payload.jao; if (!J) return null;
   const z = J[zone];
+  return (z && z[date] && z[date][run]) ? z[date][run] : null;
+}
+function fcFundSeries(zone, date, run) {  // fundamental-v0 challenger track (Volue drivers)
+  const F = fcState.payload.fund; if (!F) return null;
+  const z = F[zone];
   return (z && z[date] && z[date][run]) ? z[date][run] : null;
 }
 function fcSpread(a, b, date, run) {
@@ -5629,10 +5636,15 @@ function renderForecast() {
   const others = runs.filter(r => r !== primary).map(getSeries).filter(Boolean);
   const jaoOn = !!(document.getElementById('fc-jao') && document.getElementById('fc-jao').checked);
   let jaoS = null;
-  if (jaoOn && fcState.mode === 'dam') {        // shadow JAO challenger P50 — drawn as a distinct green line (not amber dashed)
+  if (jaoOn && fcState.mode === 'dam') {        // shadow JAO challenger P50 — green line
     jaoS = fcJaoSeries(za, date, primary);
   }
-  fcDrawChart(sPrim, others, actual, title, jaoS);
+  const fundOn = !!(document.getElementById('fc-fund') && document.getElementById('fc-fund').checked);
+  let fundS = null;
+  if (fundOn && fcState.mode === 'dam') {        // fundamental-v0 challenger P50 — purple line
+    fundS = fcFundSeries(za, date, primary);
+  }
+  fcDrawChart(sPrim, others, actual, title, jaoS, fundS);
   const guide = (fcState.mode === 'dam' && fcState.payload.guide) ? fcState.payload.guide[za] : null;
   fcDrawTable(sPrim, actual, guide, jaoS);
   fcRenderGuide(guide, fcState.mode === 'dam' ? za : null);
@@ -5647,6 +5659,13 @@ function renderForecast() {
     const dl = sPrim.p50.map((v, i) => (v != null && jaoS.p50[i] != null) ? Math.abs(v - jaoS.p50[i]) : null).filter(x => x != null);
     const md = dl.length ? dl.reduce((a, b) => a + b, 0) / dl.length : 0;
     runNote += ` · JAO-challenger (тіньовий, не промоут): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
+  }
+  if (fundS) {
+    const dl = sPrim.p50.map((v, i) => (v != null && fundS.p50[i] != null) ? Math.abs(v - fundS.p50[i]) : null).filter(x => x != null);
+    const md = dl.length ? dl.reduce((a, b) => a + b, 0) / dl.length : 0;
+    runNote += ` · Fundamental (Volue, тіньовий): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
+    const lg = document.getElementById('fc-legend');
+    if (lg) lg.innerHTML += ' &nbsp; <span style="color:#8b5cf6">━ Fundamental</span>';
   }
   const valid = sPrim.p50.filter(v => v != null);
   if (sumEl) sumEl.textContent = valid.length
@@ -5683,9 +5702,9 @@ function fcRenderGuide(guide, zone) {
   ).join('') || '<p style="color:#5b6271;font-size:12px;margin:0">Замало історії оцінки.</p>';
 }
 
-function fcDrawChart(s, others, act, title, jao) {
+function fcDrawChart(s, others, act, title, jao, fund) {
   const W = 1180, H = 460, padL = 52, padR = 60, padT = 30, padB = 36;
-  const INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', AMBER = '#e8a33d', JGREEN = '#1e9e57';
+  const INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', AMBER = '#e8a33d', JGREEN = '#1e9e57', FPURPLE = '#8b5cf6';
   const p50 = fcExpand(s.p50), p10 = fcExpand(s.p10), p90 = fcExpand(s.p90), a = fcExpand(act);
   const n = p50.length, xs = i => padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1));
   const vals = [...p10, ...p90, ...a].filter(v => v != null);
@@ -5713,6 +5732,8 @@ function fcDrawChart(s, others, act, title, jao) {
   const otherLines = (others || []).map(o => `<path d="${line(fcExpand(o.p50))}" fill="none" stroke="${AMBER}" stroke-width="2" stroke-dasharray="5 3"/>`).join('');
   const jaoExp = fcExpand(jao && jao.p50);
   const jaoLine = (jaoExp && jaoExp.some(v => v != null)) ? `<path d="${line(jaoExp)}" fill="none" stroke="${JGREEN}" stroke-width="2.2"/>` : '';
+  const fundExp = fcExpand(fund && fund.p50);
+  const fundLine = (fundExp && fundExp.some(v => v != null)) ? `<path d="${line(fundExp)}" fill="none" stroke="${FPURPLE}" stroke-width="2.2"/>` : '';
   const actLine = a.some(v => v != null) ? `<path d="${line(a)}" fill="none" stroke="${FC_RED}" stroke-width="2"/>` : '';
   const svg = document.getElementById('fc-chart');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('width', '100%');
@@ -5720,11 +5741,11 @@ function fcDrawChart(s, others, act, title, jao) {
     + gy.join('') + xt.join('')
     + `<path d="${band}" fill="${FC_BLUE}" fill-opacity="0.15" stroke="none"/>`
     + `<path d="${line(p50)}" fill="none" stroke="${FC_BLUE}" stroke-width="2.4"/>`
-    + otherLines + jaoLine + actLine + lbl.join('')
+    + otherLines + jaoLine + fundLine + actLine + lbl.join('')
     + `<text x="${W - padR}" y="16" fill="${MUT}" font-size="10" text-anchor="end">€/MWh · CET 1..24</text>`
     + `<g id="fc-cursor" style="pointer-events:none"></g>`
     + `<rect id="fc-hit" x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent" style="cursor:crosshair"/>`;
-  fcState.chart = { p50, p10, p90, a, jao: jaoExp, lo, hi, padL, padR, padT, padB, W, H, n, xs, ys };
+  fcState.chart = { p50, p10, p90, a, jao: jaoExp, fund: fundExp, lo, hi, padL, padR, padT, padB, W, H, n, xs, ys };
   fcBindHover();
 }
 
@@ -5749,12 +5770,14 @@ function fcBindHover() {
     const g = document.getElementById('fc-cursor');
     const dot = (v, col) => v == null ? '' : `<circle cx="${x.toFixed(1)}" cy="${c.ys(v).toFixed(1)}" r="3.2" fill="${col}"/>`;
     const jv = c.jao ? c.jao[i] : null;
+    const fv = c.fund ? c.fund[i] : null;
     g.innerHTML = `<line x1="${x.toFixed(1)}" y1="${c.padT}" x2="${x.toFixed(1)}" y2="${c.H - c.padB}" stroke="#8a97a8" stroke-dasharray="3 3"/>`
-      + dot(c.p50[i], FC_BLUE) + dot(jv, '#1e9e57') + dot(c.a[i], FC_RED);
+      + dot(c.p50[i], FC_BLUE) + dot(jv, '#1e9e57') + dot(fv, '#8b5cf6') + dot(c.a[i], FC_RED);
     const f = c.p50[i], av = c.a[i], fmt = v => v == null ? '—' : v.toFixed(1) + ' €';
     if (tip) {
       tip.innerHTML = `<b>${slot} CET</b><br>P50 ${fmt(f)}<br>P10–P90 ${fmt(c.p10[i])} … ${fmt(c.p90[i])}`
         + (jv != null ? `<br><span style="color:#1e9e57">JAO P50 ${fmt(jv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(jv - f >= 0 ? '+' : '') + (jv - f).toFixed(1)})</span>` : '') : '')
+        + (fv != null ? `<br><span style="color:#8b5cf6">Fundamental P50 ${fmt(fv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(fv - f >= 0 ? '+' : '') + (fv - f).toFixed(1)})</span>` : '') : '')
         + (av != null ? `<br>Actual ${fmt(av)}` + (f != null ? ` <span style="color:#8a97a8">(err ${(av - f).toFixed(1)})</span>` : '') : '');
       tip.classList.add('visible'); tip.setAttribute('aria-hidden', 'false');
       const vw = window.innerWidth, vh = window.innerHeight, tw = tip.offsetWidth, th = tip.offsetHeight;
