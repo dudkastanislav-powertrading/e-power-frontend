@@ -5663,9 +5663,9 @@ function renderForecast() {
   if (fundS) {
     const dl = sPrim.p50.map((v, i) => (v != null && fundS.p50[i] != null) ? Math.abs(v - fundS.p50[i]) : null).filter(x => x != null);
     const md = dl.length ? dl.reduce((a, b) => a + b, 0) / dl.length : 0;
-    runNote += ` · Fundamental (Volue, тіньовий): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
+    runNote += ` · Unified (ENTSO-E+Volue+JAO, тіньовий): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
     const lg = document.getElementById('fc-legend');
-    if (lg) lg.innerHTML += ' &nbsp; <span style="color:#8b5cf6">━ Fundamental</span>';
+    if (lg) lg.innerHTML += ' &nbsp; <span style="color:#8b5cf6">━ Unified</span>';
   }
   const valid = sPrim.p50.filter(v => v != null);
   if (sumEl) sumEl.textContent = valid.length
@@ -5777,7 +5777,7 @@ function fcBindHover() {
     if (tip) {
       tip.innerHTML = `<b>${slot} CET</b><br>P50 ${fmt(f)}<br>P10–P90 ${fmt(c.p10[i])} … ${fmt(c.p90[i])}`
         + (jv != null ? `<br><span style="color:#1e9e57">JAO P50 ${fmt(jv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(jv - f >= 0 ? '+' : '') + (jv - f).toFixed(1)})</span>` : '') : '')
-        + (fv != null ? `<br><span style="color:#8b5cf6">Fundamental P50 ${fmt(fv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(fv - f >= 0 ? '+' : '') + (fv - f).toFixed(1)})</span>` : '') : '')
+        + (fv != null ? `<br><span style="color:#8b5cf6">Unified P50 ${fmt(fv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(fv - f >= 0 ? '+' : '') + (fv - f).toFixed(1)})</span>` : '') : '')
         + (av != null ? `<br>Actual ${fmt(av)}` + (f != null ? ` <span style="color:#8a97a8">(err ${(av - f).toFixed(1)})</span>` : '') : '');
       tip.classList.add('visible'); tip.setAttribute('aria-hidden', 'false');
       const vw = window.innerWidth, vh = window.innerHeight, tw = tip.offsetWidth, th = tip.offsetHeight;
