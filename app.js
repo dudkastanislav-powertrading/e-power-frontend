@@ -6170,13 +6170,57 @@ function fcRenderDrivers(za, date) {
     + an.map(a => `<span style="${FC_CHIP_BLUE}" title="cosine similarity ${a.sim}">${a.d} · DAM avg ${a.avg_px == null ? '—' : a.avg_px + '€'} · sim ${a.sim}</span>`).join(' ')
     + `<span style="font-size:11px;color:#8a97a8"> — що DAM реально робив у схожі дні (калібрування, не прогноз)</span></div>`;
   el.innerHTML = `<h3 class="pd-block-title">Чому таке число — драйвери ${za} · ${date}</h3>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%">${tightMarks}${gy.join('')}${xt.join('')}
+    <svg id="fc-drv-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" style="cursor:crosshair">${tightMarks}${gy.join('')}${xt.join('')}
       <path d="${area}" fill="#1e7a3a" fill-opacity="0.10"/>
       <path d="${line(norm)}" fill="none" stroke="#8a97a8" stroke-width="1.8" stroke-dasharray="5 4"/>
       <path d="${line(resid)}" fill="none" stroke="${FC_BLUE}" stroke-width="2.4"/>
       ${shareTicks}
-      <text x="${padL}" y="14" font-size="12" font-weight="600" fill="#1f2430">Residual load D+1 (синя) vs 35д норма по годинах (пунктир) · ВДЕ-частка (зелена зона, права вісь %) · JAO tight (червоні смуги)</text></svg>
+      <text x="${padL}" y="14" font-size="12" font-weight="600" fill="#1f2430">Residual load D+1 (синя) vs 35д норма по годинах (пунктир) · ВДЕ-частка (зелена зона, права вісь %) · JAO tight (червоні смуги)</text>
+      <g id="fc-drv-cursor" style="pointer-events:none"></g></svg>
     <div style="margin-top:4px">${chips.join(' ')}</div>${anHtml}`;
+  fcBindDriversHover({ za, date, resid, norm, share, imp: dz.imp || [], exp: dz.exp || [],
+                       tight: dz.tight || [], W, H, padL, padR, padT, padB, xs, ys, ys2 });
+}
+
+// Interactive hover for the driver panel — mirrors the forecast chart's UX
+// (vertical guide + dots + #fc-tooltip with the hour's key numbers).
+function fcBindDriversHover(c) {
+  const svg = document.getElementById('fc-drv-chart');
+  const tip = document.getElementById('fc-tooltip');
+  if (!svg) return;
+  const fmtMW = v => v == null ? '—' : (Math.round(v).toLocaleString('en-US') + ' MW');
+  const move = (evt) => {
+    const r = svg.getBoundingClientRect();
+    const x0 = (evt.clientX - r.left) * c.W / r.width;
+    let i = Math.round((x0 - c.padL) / (c.W - c.padL - c.padR) * 23);
+    i = Math.max(0, Math.min(23, i));
+    const x = c.xs(i);
+    const g = document.getElementById('fc-drv-cursor'); if (!g) return;
+    const dot = (v, y, col) => v == null ? '' : `<circle cx="${x.toFixed(1)}" cy="${y(v).toFixed(1)}" r="3.2" fill="${col}"/>`;
+    g.innerHTML = `<line x1="${x.toFixed(1)}" y1="${c.padT}" x2="${x.toFixed(1)}" y2="${c.H - c.padB}" stroke="#8a97a8" stroke-dasharray="3 3"/>`
+      + dot(c.resid[i], c.ys, FC_BLUE) + dot(c.norm[i], c.ys, '#8a97a8')
+      + (c.share[i] != null ? dot(Math.min(1, c.share[i]), c.ys2, '#1e7a3a') : '');
+    if (tip) {
+      const dn = (c.resid[i] != null && c.norm[i] != null) ? c.resid[i] - c.norm[i] : null;
+      tip.innerHTML = `<b>Година ${i + 1} CET</b>`
+        + `<br>Residual load D+1: <b>${fmtMW(c.resid[i])}</b>`
+        + `<br>35д норма: ${fmtMW(c.norm[i])}`
+        + (dn != null ? ` <span style="color:${dn >= 0 ? '#a8281a' : '#1e7a3a'}">(Δ ${(dn >= 0 ? '+' : '') + Math.round(dn)} MW)</span>` : '')
+        + (c.share[i] != null ? `<br><span style="color:#1e7a3a">ВДЕ-частка: ${(c.share[i] * 100).toFixed(0)}%</span>` : '')
+        + (c.imp[i] != null ? `<br>Імпорт headroom: ${fmtMW(c.imp[i])}` : '')
+        + (c.exp[i] != null ? `<br>Експорт headroom: ${fmtMW(c.exp[i])}` : '')
+        + ((c.tight[i] != null && c.tight[i] > 0) ? `<br><span style="color:#a8281a">⚠ JAO tight (binding constraints: ${Math.round(c.tight[i])})</span>` : '');
+      tip.classList.add('visible'); tip.setAttribute('aria-hidden', 'false');
+      const vw = window.innerWidth, vh = window.innerHeight, tw = tip.offsetWidth, th = tip.offsetHeight;
+      tip.style.left = `${Math.min(evt.clientX + 14, vw - tw - 8)}px`;
+      tip.style.top = `${Math.min(evt.clientY + 14, vh - th - 8)}px`;
+    }
+  };
+  svg.addEventListener('mousemove', move);
+  svg.addEventListener('mouseleave', () => {
+    const g = document.getElementById('fc-drv-cursor'); if (g) g.innerHTML = '';
+    if (tip) { tip.classList.remove('visible'); tip.setAttribute('aria-hidden', 'true'); }
+  });
 }
 
 // F11 — challenger promotion badges (paired vs champion on shared zone-days)
