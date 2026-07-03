@@ -5683,7 +5683,7 @@ function renderForecast() {
   }
   fcDrawChart(sPrim, others, actual, title, jaoS, fundS, v11S);
   const guide = (fcState.mode === 'dam' && fcState.payload.guide) ? fcState.payload.guide[za] : null;
-  fcDrawTable(sPrim, actual, guide, jaoS);
+  fcDrawTable(sPrim, actual, guide, jaoS, fundS, v11S);
   fcRenderGuide(guide, fcState.mode === 'dam' ? za : null);
   if (fcState.mode === 'dam') fcRenderDrivers(za, date); else fcHideDrivers();
   // two-runs visibility note
@@ -5841,14 +5841,26 @@ function fcBindHover() {
   });
 }
 
-function fcDrawTable(s, act, guide, jao) {
+function fcDrawTable(s, act, guide, jao, fund, v11) {
   const q15 = fcState.gran === 15;
   const label = (h, k) => q15 ? `${String(h - 1).padStart(2, '0')}:${String(k * 15).padStart(2, '0')}` : String(h);
   const fmt = v => v == null ? '—' : v.toFixed(1);
   const cls = (col, rec) => rec === col ? ' class="fc-rec"' : '';   // highlight recommended quantile
-  const jaoTh = jao ? '<th title="JAO challenger P50 (тіньовий) + Δ до champion" style="color:#1e9e57">JAO P50</th>' : '';
+  // Challenger columns (2026-07-03): each enabled shadow model gets ONE column —
+  // P50 (Δ до champion) + its own P10…P90 band underneath, so the trader can
+  // compare central estimates AND corridors of all models in one table.
+  const models = [];
+  if (jao)  models.push({ key: 'jao', s: jao,  name: 'JAO',     col: '#1e9e57' });
+  if (fund) models.push({ key: 'uni', s: fund, name: 'Unified', col: '#8b5cf6' });
+  if (v11)  models.push({ key: 'v11', s: v11,  name: 'v1.1',    col: '#0d9488' });
+  const band = (ms, i) => (ms.p10 && ms.p90 && ms.p10[i] != null && ms.p90[i] != null)
+    ? `<div style="font-size:10px;color:#8a97a8;line-height:1.1">${ms.p10[i].toFixed(0)}…${ms.p90[i].toFixed(0)}</div>` : '';
+  const mTh = models.map(m =>
+    `<th title="${m.name} challenger (тіньовий): P50 (Δ до champion) + власний коридор P10…P90" style="color:${m.col}">${m.name}<div style="font-size:9px;font-weight:400;color:#8a97a8">P50 (Δ) · P10…P90</div></th>`).join('');
   const rows = [];
-  const exp = [['slot_CET', 'P10', 'P50', 'P90'].concat(jao ? ['jao_p50'] : []).concat(['actual', 'err', 'base'])];
+  const exp = [['slot_CET', 'P10', 'P50', 'P90']
+    .concat(models.flatMap(m => [`${m.key}_p10`, `${m.key}_p50`, `${m.key}_p90`]))
+    .concat(['actual', 'err', 'base'])];
   for (let h = 1; h <= 24; h++) {
     const i = h - 1;
     const rec = guide && guide[i] ? guide[i].rec : null;        // 'P10'|'P50'|'P90'
@@ -5857,27 +5869,40 @@ function fcDrawTable(s, act, guide, jao) {
     for (const k of sub) {
       const f = s.p50[i], av = act[i];
       const err = (f != null && av != null) ? (av - f).toFixed(1) : '';
-      const jv = jao ? jao.p50[i] : null;
-      const jd = (jao && jv != null && f != null) ? (jv - f >= 0 ? '+' : '') + (jv - f).toFixed(1) : '';
-      const jaoTd = jao ? `<td style="color:#1e9e57">${fmt(jv)}${jd ? ` <span style="color:#8a97a8;font-size:11px">(${jd})</span>` : ''}</td>` : '';
-      rows.push(`<tr><td>${label(h, k)}</td><td${cls('P10', rec)}>${fmt(s.p10[i])}</td><td${cls('P50', rec)}>${fmt(f)}</td><td${cls('P90', rec)}>${fmt(s.p90[i])}</td>${jaoTd}<td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td><td>${baseCell}</td></tr>`);
-      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i]].concat(jao ? [jv == null ? '' : jv] : []).concat([av == null ? '' : av, err, rec || '']));
+      const mTds = models.map(m => {
+        const mv = m.s.p50[i];
+        const d = (mv != null && f != null) ? (mv - f >= 0 ? '+' : '') + (mv - f).toFixed(1) : '';
+        return `<td style="color:${m.col};white-space:nowrap">${fmt(mv)}${d ? ` <span style="color:#8a97a8;font-size:11px">(${d})</span>` : ''}${band(m.s, i)}</td>`;
+      }).join('');
+      rows.push(`<tr><td>${label(h, k)}</td><td${cls('P10', rec)}>${fmt(s.p10[i])}</td><td${cls('P50', rec)}>${fmt(f)}</td><td${cls('P90', rec)}>${fmt(s.p90[i])}</td>${mTds}<td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td><td>${baseCell}</td></tr>`);
+      exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i]]
+        .concat(models.flatMap(m => [m.s.p10 && m.s.p10[i] != null ? m.s.p10[i] : '',
+                                     m.s.p50[i] != null ? m.s.p50[i] : '',
+                                     m.s.p90 && m.s.p90[i] != null ? m.s.p90[i] : '']))
+        .concat([av == null ? '' : av, err, rec || '']));
     }
   }
   // Baseload average row (mean over the 24 hours) — quick read of the day's level.
   const avg = arr => { const v = (arr || []).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
   const aP10 = avg(s.p10), aP50 = avg(s.p50), aP90 = avg(s.p90), aAct = avg(act);
   const aErr = (aP50 != null && aAct != null) ? (aAct - aP50).toFixed(1) : '';
-  const aJao = jao ? avg(jao.p50) : null;
-  const jaoFootTd = jao ? `<td style="color:#1e9e57">${fmt(aJao)}</td>` : '';
+  const mFoot = models.map(m => {
+    const a50 = avg(m.s.p50), a10 = avg(m.s.p10), a90 = avg(m.s.p90);
+    const b = (a10 != null && a90 != null)
+      ? `<div style="font-size:10px;color:#8a97a8;font-weight:400">${a10.toFixed(0)}…${a90.toFixed(0)}</div>` : '';
+    return `<td style="color:${m.col}">${fmt(a50)}${b}</td>`;
+  }).join('');
   const foot = `<tfoot><tr style="font-weight:700;border-top:2px solid #c9d2dd;background:#f3f6fa">`
-    + `<td>Avg baseload</td><td>${fmt(aP10)}</td><td>${fmt(aP50)}</td><td>${fmt(aP90)}</td>${jaoFootTd}`
+    + `<td>Avg baseload</td><td>${fmt(aP10)}</td><td>${fmt(aP50)}</td><td>${fmt(aP90)}</td>${mFoot}`
     + `<td>${aAct == null ? '<span style="color:#8a97a8">—</span>' : fmt(aAct)}</td><td>${aErr}</td><td></td></tr></tfoot>`;
   exp.push(['Avg_baseload', aP10 == null ? '' : aP10.toFixed(2), aP50 == null ? '' : aP50.toFixed(2),
-            aP90 == null ? '' : aP90.toFixed(2)].concat(jao ? [aJao == null ? '' : aJao.toFixed(2)] : [])
+            aP90 == null ? '' : aP90.toFixed(2)]
+            .concat(models.flatMap(m => [avg(m.s.p10) == null ? '' : avg(m.s.p10).toFixed(2),
+                                         avg(m.s.p50) == null ? '' : avg(m.s.p50).toFixed(2),
+                                         avg(m.s.p90) == null ? '' : avg(m.s.p90).toFixed(2)]))
             .concat([aAct == null ? '' : aAct.toFixed(2), aErr, '']));
   document.getElementById('fc-table').innerHTML =
-    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th>${jaoTh}<th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th></tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
+    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th>${mTh}<th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th></tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
   fcState.exportRows = exp;
   fcState.exportName = (fcState.mode === 'dam'
     ? document.getElementById('fc-zone-a').value
@@ -5885,7 +5910,7 @@ function fcDrawTable(s, act, guide, jao) {
     + '_' + document.getElementById('fc-date').value + (q15 ? '_15min' : '_hourly');
   const lg = document.getElementById('fc-legend');
   if (lg) lg.innerHTML = `<span style="color:${FC_BLUE}">■ P50 forecast</span> &nbsp; <span style="color:${FC_BLUE};opacity:.5">▮ P10–P90</span>`
-    + (jao ? ` &nbsp; <span style="color:#1e9e57">━ JAO P50</span>` : '')
+    + models.map(m => ` &nbsp; <span style="color:${m.col}">━ ${m.name} P50</span>`).join('')
     + ` &nbsp; <span style="color:${FC_RED}">■ Actual</span>`;
 }
 
