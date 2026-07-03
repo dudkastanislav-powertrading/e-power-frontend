@@ -76,7 +76,9 @@
         <button type="button" class="profile-btn" data-profile="tb4"
                 title="Top-4 consecutive hours minus bottom-4 — 4h battery spread">TB4</button>
         <button type="button" class="profile-btn" data-profile="pv"
-                title="Solar capture price — volume-weighted DAM by hourly PV output (B16)">PV</button>
+                title="Solar TOTAL capture — B16 as reported by ENTSO-E, INCLUDES hybrid PV+BESS discharge (flattered vs clean PV in hybrid-heavy zones like BG)">PV total</button>
+        <button type="button" class="profile-btn" data-profile="pvc"
+                title="Solar CLEAN capture (est.) — B16 inside the astronomical daylight window only; hybrid-BESS component carved out (v0-window)">PV clean</button>
         <button type="button" class="profile-btn" data-profile="wind"
                 title="Wind capture price — volume-weighted DAM by hourly Wind output (B18 + B19)">Wind</button>
       </div>
@@ -389,7 +391,8 @@
             <button type="button" class="seg-btn" data-pd-product="offpeak">Off-peak</button>
             <button type="button" class="seg-btn" data-pd-product="tb2">TB2</button>
             <button type="button" class="seg-btn" data-pd-product="tb4">TB4</button>
-            <button type="button" class="seg-btn" data-pd-product="pv">PV</button>
+            <button type="button" class="seg-btn" data-pd-product="pv">PV total</button>
+            <button type="button" class="seg-btn" data-pd-product="pvc">PV clean</button>
             <button type="button" class="seg-btn" data-pd-product="wind">Wind</button>
           </div>
         </div>
@@ -573,6 +576,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=54" type="module"></script>
+  <script src="app.js?v=55" type="module"></script>
 </body>
 </html>

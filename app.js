@@ -268,6 +268,12 @@ async function loadRealData() {
   const fPv   = sv >= 4 ? 'sl' : null;
   const fWv   = sv >= 5 ? 'wv' : null;
   const fSv   = sv >= 5 ? 'sv' : null;
+  // Schema v6 (2026-07-03): slc/svc = CLEAN solar capture/volume (daylight-window
+  // decomposition, hybrid-BESS carved out); bsh = daily share of B16 outside the
+  // window (hybrid pollution gauge). `sl/sv` stay TOTAL as reported by ENTSO-E.
+  const fSlc  = sv >= 6 ? 'slc' : null;
+  const fSvc  = sv >= 6 ? 'svc' : null;
+  const fBsh  = sv >= 6 ? 'bsh' : null;
   const map = new Map();
   for (const r of daily.rows) {
     const z = r[fZone];
@@ -283,6 +289,9 @@ async function loadRealData() {
       pv: fPv ? r[fPv] : null,
       windVol: fWv ? r[fWv] : null,
       pvVol:   fSv ? r[fSv] : null,
+      pvc:    fSlc ? r[fSlc] : null,
+      pvcVol: fSvc ? r[fSvc] : null,
+      bsh:    fBsh ? r[fBsh] : null,
     });
   }
   state.data = map;
@@ -559,7 +568,8 @@ function profileField(profile) {
     case 'offpeak': return 'offpeak';
     case 'tb2':     return 'tb2';
     case 'tb4':     return 'tb4';
-    case 'pv':      return 'pv';     // solar-weighted capture price
+    case 'pv':      return 'pv';     // solar TOTAL capture (B16 as reported, incl. hybrid BESS)
+    case 'pvc':     return 'pvc';    // solar CLEAN capture (daylight-window decomposition)
     case 'wind':    return 'wind';   // wind-weighted capture price (B18+B19)
     case 'baseload':
     default:        return 'mean';
@@ -640,8 +650,8 @@ function averageWindow(zoneCode, mode, profile, refDateISO) {
     });
   }
   if (!slice || slice.length === 0) return null;
-  // Volume-weighted aggregate for PV / Wind, arithmetic mean otherwise.
-  if (profile === 'pv' || profile === 'wind') {
+  // Volume-weighted aggregate for PV (total/clean) / Wind, arithmetic mean otherwise.
+  if (profile === 'pv' || profile === 'pvc' || profile === 'wind') {
     return weightedCapturePrice(slice, profile);
   }
   return avgField(slice, field);
@@ -654,9 +664,10 @@ function averageWindow(zoneCode, mode, profile, refDateISO) {
 // MWh produced, so high-production days dominate as they should.
 // Returns null if no day has a usable (capture, volume>0) pair.
 function weightedCapturePrice(slice, profile) {
-  if (profile !== 'pv' && profile !== 'wind') return null;
-  const capField = profile;                              // 'pv' or 'wind'
-  const volField = profile === 'pv' ? 'pvVol' : 'windVol';
+  const volMap = { pv: 'pvVol', pvc: 'pvcVol', wind: 'windVol' };
+  const volField = volMap[profile];
+  if (!volField) return null;
+  const capField = profile;                              // 'pv' | 'pvc' | 'wind'
   let num = 0, den = 0;
   for (const r of slice) {
     const v = r[volField];
@@ -729,7 +740,7 @@ function updateMapTitle() {
   const profileLabel = ({
     baseload: 'baseload', peak: 'peak', offpeak: 'off-peak',
     tb2: 'TB2 spread', tb4: 'TB4 spread',
-    pv: 'PV capture', wind: 'Wind capture',
+    pv: 'PV capture (total incl. BESS)', pvc: 'PV capture (clean est.)', wind: 'Wind capture',
   })[state.profile] || state.profile;
   let label;
   if (state.mode === 'day') {
@@ -1274,7 +1285,7 @@ function periodAvgForZone(zoneCode, predicate) {
   if (!series) return null;
   const slice = series.filter(r => predicate(parseISO(r.date)));
   if (!slice.length) return null;
-  if (state.profile === 'pv' || state.profile === 'wind') return weightedCapturePrice(slice, state.profile);
+  if (state.profile === 'pv' || state.profile === 'pvc' || state.profile === 'wind') return weightedCapturePrice(slice, state.profile);
   return avgField(slice, profileField(state.profile));
 }
 
@@ -1354,7 +1365,8 @@ function showDetailPanel(iso3, fullName) {
     { label: 'Off-peak',  prof: 'offpeak'  },
     { label: 'TB2 spread',prof: 'tb2'      },
     { label: 'TB4 spread',prof: 'tb4'      },
-    { label: 'PV capture',prof: 'pv'       },
+    { label: 'PV total',  prof: 'pv'       },
+    { label: 'PV clean',  prof: 'pvc'      },
     { label: 'Wind capture', prof: 'wind'  },
   ];
   const statsHtml = stats.map(s => {
@@ -3300,7 +3312,8 @@ state.gen = {
 // border flow aggregates (curated.commercial_exchange), not generation;
 // the backend already sums them across all partner zones per hour.
 const GEN_TYPE_OPTIONS = [
-  { code: 'B16',  label: 'Solar' },
+  { code: 'B16',  label: 'Solar (total, incl. hybrid BESS)' },
+  { code: 'B16B', label: 'Solar hybrid/BESS component (est.)' },
   { code: 'WIND', label: 'Wind (Onshore + Offshore)' },
   { code: 'B14',  label: 'Nuclear' },
   { code: 'B12',  label: 'Hydro Reservoir' },
@@ -3964,7 +3977,7 @@ state.pd = {
 const PD_PRODUCT_LABELS = {
   peak: 'Peak', offpeak: 'Off-peak',
   tb2: 'TB2 spread', tb4: 'TB4 spread',
-  pv: 'PV capture', wind: 'Wind capture',
+  pv: 'PV capture (total)', pvc: 'PV capture (clean)', wind: 'Wind capture',
 };
 
 // Year color palette: older years stay grey, recent year emphasised blue,
@@ -4036,7 +4049,7 @@ function hidePdStatus() {
 // ----- Aggregations -----------------------------------------
 // productField maps UI key → dam_daily.json reshaped key
 function pdProductField(p) {
-  return ({ peak:'peak', offpeak:'offpeak', tb2:'tb2', tb4:'tb4', pv:'pv', wind:'wind' })[p] || 'mean';
+  return ({ peak:'peak', offpeak:'offpeak', tb2:'tb2', tb4:'tb4', pv:'pv', pvc:'pvc', wind:'wind' })[p] || 'mean';
 }
 // Spread-class products are expressed as ratio of baseload, not delta.
 function pdIsSpreadProduct(p) {
@@ -4071,7 +4084,7 @@ function pdAggregate(zone, product, year, monthFrom, monthTo) {
   const field = pdProductField(product);
   // PV/Wind → volume-weighted period capture (SUM(p·v) / SUM(v)).
   // Everything else → arithmetic mean of daily values.
-  const value = (product === 'pv' || product === 'wind')
+  const value = (product === 'pv' || product === 'pvc' || product === 'wind')
     ? weightedCapturePrice(rows, product)
     : pdMeanField(rows, field);
   const baseload = pdMeanField(rows, 'mean');
@@ -5159,12 +5172,20 @@ const DEFINITIONS = {
       source: 'derived; обчислюється у фронтенді поверх dam_daily.json',
     },
     {
-      name: 'PV capture (Solar)',
-      desc: 'Ціна, яку реально отримав «середній» сонячний MWh за добу. Зважена за PV виробництвом (B16) година-по-годині.',
-      formula: 'Σ (Price_h × PV_h) ÷ Σ PV_h, за всіма годинами доби',
+      name: 'PV capture — total (incl. hybrid BESS)',
+      desc: 'Ціна «середнього» MWh з категорії B16 Solar ЯК ЗВІТУЄ ENTSO-E. Увага: з 2025+ гібридні PV+BESS установки сидять у B16 — вечірній розряд батарей зараховується як «сонце», тож total capture ЗАВИЩЕНИЙ відносно чистого PV (BG 2026: ~74% vs ~60% ratio). Для оцінки доходу гібридного профілю — саме цей показник; для cannibalization/PPA чистого PV — дивись PV clean.',
+      formula: 'Σ (Price_h × B16_h) ÷ Σ B16_h, за всіма годинами доби',
       unit: '€/MWh',
       period: 'CET 1..24, на одну добу',
       source: 'curated.dam_price + curated.generation_actual (B16) · ENTSO-E A75',
+    },
+    {
+      name: 'PV capture — clean (est.)',
+      desc: 'Те саме, але лише по B16 всередині астрономічного денного вікна (sunrise−30хв … sunset+30хв per зона) — консервативна оцінка ЧИСТОГО сонця без вечірнього BESS-розряду. Метод v0-window = нижня межа BESS-компоненту (не ловить розряд у сутінках і midday-charging); v1 shape-fit — у плані.',
+      formula: 'Σ (Price_h × PV_win_h) ÷ Σ PV_win_h; PV_win = B16 у денному вікні',
+      unit: '€/MWh',
+      period: 'CET 1..24, на одну добу',
+      source: 'marts.solar_decomposition_hourly (v0-window) · tools/build_solar_decomposition.py',
     },
     {
       name: 'Wind capture',
