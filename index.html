@@ -469,6 +469,8 @@
           <div class="seg-toggle" role="group" aria-label="Mode">
             <button type="button" class="seg-btn active" data-fc-mode="dam">DAM zone</button>
             <button type="button" class="seg-btn" data-fc-mode="spread">Spread A−B</button>
+            <button type="button" class="seg-btn" data-fc-mode="radar">🎯 Spread Radar</button>
+            <button type="button" class="seg-btn" data-fc-mode="risk">🔥 Tail Risk</button>
             <button type="button" class="seg-btn" data-fc-mode="health">📈 Quality Analysis</button>
           </div>
         </div>
@@ -501,9 +503,22 @@
             <input type="checkbox" id="fc-fund" checked> порівняти з Unified (ENTSO-E+Volue+JAO)
           </label>
         </div>
+        <div class="sp-ctrl">
+          <label for="fc-v11">v1.1</label>
+          <label class="fc-v11-wrap" style="display:flex;align-items:center;gap:6px;font-size:12px;color:#5b6271">
+            <input type="checkbox" id="fc-v11" checked> порівняти з v1.1 (season+ramp)
+          </label>
+        </div>
       </div>
 
       <div class="pd-status" id="fc-status">Loading…</div>
+
+      <!-- Regime strip (§12.1 markers) + Morning brief (F1/F7, 2026-07-03) -->
+      <div id="fc-regime" style="margin:4px 0 8px"></div>
+      <details class="pd-block" id="fc-brief" open>
+        <summary class="pd-block-title" style="cursor:pointer" id="fc-brief-title">🌅 Morning brief</summary>
+        <div id="fc-brief-body">—</div>
+      </details>
 
       <div class="pd-block">
         <div class="pd-chart-legend" id="fc-legend"></div>
@@ -527,6 +542,9 @@
           </aside>
         </div>
       </div>
+
+      <!-- Driver panel: WHY the forecast is what it is (F4/F8, 2026-07-03) -->
+      <div class="pd-block hidden" id="fc-drivers"></div>
 
       <!-- Forecast quality & caveats (research panel) -->
       <details class="pd-block" id="fc-quality-block">
@@ -555,6 +573,6 @@
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 
   <!-- App -->
-  <script src="app.js?v=52" type="module"></script>
+  <script src="app.js?v=54" type="module"></script>
 </body>
 </html>

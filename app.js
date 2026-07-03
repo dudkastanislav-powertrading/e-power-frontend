@@ -5565,6 +5565,8 @@ async function initForecastView() {
   if (jaoCb) jaoCb.addEventListener('change', renderForecast);
   const fundCb = document.getElementById('fc-fund');
   if (fundCb) fundCb.addEventListener('change', renderForecast);
+  const v11Cb = document.getElementById('fc-v11');
+  if (v11Cb) v11Cb.addEventListener('change', renderForecast);
   [aSel, bSel, dSel].forEach(s => s.addEventListener('change', renderForecast));
   const exp = document.getElementById('fc-export');
   if (exp) exp.addEventListener('click', fcExportCsv);
@@ -5600,6 +5602,11 @@ function fcFundSeries(zone, date, run) {  // fundamental-v0 challenger track (Vo
   const z = F[zone];
   return (z && z[date] && z[date][run]) ? z[date][run] : null;
 }
+function fcV11Series(zone, date, run) {   // hybrid-v1.1 challenger (recency+season+ramp)
+  const V = fcState.payload.v11; if (!V) return null;
+  const z = V[zone];
+  return (z && z[date] && z[date][run]) ? z[date][run] : null;
+}
 function fcSpread(a, b, date, run) {
   const A = fcSeries(a, date, run), B = fcSeries(b, date, run);
   if (!A || !B) return null;
@@ -5618,7 +5625,11 @@ function renderForecast() {
   const st = document.getElementById('fc-status');
   const sumEl = document.getElementById('fc-summary');
 
-  if (fcState.mode === 'health') { if (st) st.classList.add('hidden'); fcRenderHealth(za); return; }
+  fcRenderRegime(za);
+  fcRenderBrief();
+  if (fcState.mode === 'health') { if (st) st.classList.add('hidden'); fcHideDrivers(); fcRenderHealth(za); return; }
+  if (fcState.mode === 'radar')  { if (st) st.classList.add('hidden'); fcHideDrivers(); fcRenderRadar(); return; }
+  if (fcState.mode === 'risk')   { if (st) st.classList.add('hidden'); fcHideDrivers(); fcRenderRisk(); return; }
 
   const getSeries = run => fcState.mode === 'dam' ? fcSeries(za, date, run) : fcSpread(za, zb, date, run);
   const sPrim = getSeries(primary);
@@ -5644,10 +5655,16 @@ function renderForecast() {
   if (fundOn && fcState.mode === 'dam') {        // fundamental-v0 challenger P50 — purple line
     fundS = fcFundSeries(za, date, primary);
   }
-  fcDrawChart(sPrim, others, actual, title, jaoS, fundS);
+  const v11On = !!(document.getElementById('fc-v11') && document.getElementById('fc-v11').checked);
+  let v11S = null;
+  if (v11On && fcState.mode === 'dam') {         // hybrid-v1.1 challenger P50 — teal line
+    v11S = fcV11Series(za, date, primary);
+  }
+  fcDrawChart(sPrim, others, actual, title, jaoS, fundS, v11S);
   const guide = (fcState.mode === 'dam' && fcState.payload.guide) ? fcState.payload.guide[za] : null;
   fcDrawTable(sPrim, actual, guide, jaoS);
   fcRenderGuide(guide, fcState.mode === 'dam' ? za : null);
+  if (fcState.mode === 'dam') fcRenderDrivers(za, date); else fcHideDrivers();
   // two-runs visibility note
   let runNote = '';
   if (others.length) {
@@ -5666,6 +5683,13 @@ function renderForecast() {
     runNote += ` · Unified (ENTSO-E+Volue+JAO, тіньовий): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
     const lg = document.getElementById('fc-legend');
     if (lg) lg.innerHTML += ' &nbsp; <span style="color:#8b5cf6">━ Unified</span>';
+  }
+  if (v11S) {
+    const dl = sPrim.p50.map((v, i) => (v != null && v11S.p50[i] != null) ? Math.abs(v - v11S.p50[i]) : null).filter(x => x != null);
+    const md = dl.length ? dl.reduce((a, b) => a + b, 0) / dl.length : 0;
+    runNote += ` · v1.1 (season+ramp, тіньовий): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
+    const lg = document.getElementById('fc-legend');
+    if (lg) lg.innerHTML += ' &nbsp; <span style="color:#0d9488">━ v1.1</span>';
   }
   const valid = sPrim.p50.filter(v => v != null);
   if (sumEl) sumEl.textContent = valid.length
@@ -5702,9 +5726,9 @@ function fcRenderGuide(guide, zone) {
   ).join('') || '<p style="color:#5b6271;font-size:12px;margin:0">Замало історії оцінки.</p>';
 }
 
-function fcDrawChart(s, others, act, title, jao, fund) {
+function fcDrawChart(s, others, act, title, jao, fund, v11) {
   const W = 1180, H = 460, padL = 52, padR = 60, padT = 30, padB = 36;
-  const INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', AMBER = '#e8a33d', JGREEN = '#1e9e57', FPURPLE = '#8b5cf6';
+  const INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', AMBER = '#e8a33d', JGREEN = '#1e9e57', FPURPLE = '#8b5cf6', VTEAL = '#0d9488';
   const p50 = fcExpand(s.p50), p10 = fcExpand(s.p10), p90 = fcExpand(s.p90), a = fcExpand(act);
   const n = p50.length, xs = i => padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1));
   const vals = [...p10, ...p90, ...a].filter(v => v != null);
@@ -5734,6 +5758,8 @@ function fcDrawChart(s, others, act, title, jao, fund) {
   const jaoLine = (jaoExp && jaoExp.some(v => v != null)) ? `<path d="${line(jaoExp)}" fill="none" stroke="${JGREEN}" stroke-width="2.2"/>` : '';
   const fundExp = fcExpand(fund && fund.p50);
   const fundLine = (fundExp && fundExp.some(v => v != null)) ? `<path d="${line(fundExp)}" fill="none" stroke="${FPURPLE}" stroke-width="2.2"/>` : '';
+  const v11Exp = fcExpand(v11 && v11.p50);
+  const v11Line = (v11Exp && v11Exp.some(v => v != null)) ? `<path d="${line(v11Exp)}" fill="none" stroke="${VTEAL}" stroke-width="2.2" stroke-dasharray="7 3"/>` : '';
   const actLine = a.some(v => v != null) ? `<path d="${line(a)}" fill="none" stroke="${FC_RED}" stroke-width="2"/>` : '';
   const svg = document.getElementById('fc-chart');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('width', '100%');
@@ -5741,11 +5767,11 @@ function fcDrawChart(s, others, act, title, jao, fund) {
     + gy.join('') + xt.join('')
     + `<path d="${band}" fill="${FC_BLUE}" fill-opacity="0.15" stroke="none"/>`
     + `<path d="${line(p50)}" fill="none" stroke="${FC_BLUE}" stroke-width="2.4"/>`
-    + otherLines + jaoLine + fundLine + actLine + lbl.join('')
+    + otherLines + jaoLine + fundLine + v11Line + actLine + lbl.join('')
     + `<text x="${W - padR}" y="16" fill="${MUT}" font-size="10" text-anchor="end">€/MWh · CET 1..24</text>`
     + `<g id="fc-cursor" style="pointer-events:none"></g>`
     + `<rect id="fc-hit" x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent" style="cursor:crosshair"/>`;
-  fcState.chart = { p50, p10, p90, a, jao: jaoExp, fund: fundExp, lo, hi, padL, padR, padT, padB, W, H, n, xs, ys };
+  fcState.chart = { p50, p10, p90, a, jao: jaoExp, fund: fundExp, v11: v11Exp, lo, hi, padL, padR, padT, padB, W, H, n, xs, ys };
   fcBindHover();
 }
 
@@ -5771,13 +5797,15 @@ function fcBindHover() {
     const dot = (v, col) => v == null ? '' : `<circle cx="${x.toFixed(1)}" cy="${c.ys(v).toFixed(1)}" r="3.2" fill="${col}"/>`;
     const jv = c.jao ? c.jao[i] : null;
     const fv = c.fund ? c.fund[i] : null;
+    const vv = c.v11 ? c.v11[i] : null;
     g.innerHTML = `<line x1="${x.toFixed(1)}" y1="${c.padT}" x2="${x.toFixed(1)}" y2="${c.H - c.padB}" stroke="#8a97a8" stroke-dasharray="3 3"/>`
-      + dot(c.p50[i], FC_BLUE) + dot(jv, '#1e9e57') + dot(fv, '#8b5cf6') + dot(c.a[i], FC_RED);
+      + dot(c.p50[i], FC_BLUE) + dot(jv, '#1e9e57') + dot(fv, '#8b5cf6') + dot(vv, '#0d9488') + dot(c.a[i], FC_RED);
     const f = c.p50[i], av = c.a[i], fmt = v => v == null ? '—' : v.toFixed(1) + ' €';
     if (tip) {
       tip.innerHTML = `<b>${slot} CET</b><br>P50 ${fmt(f)}<br>P10–P90 ${fmt(c.p10[i])} … ${fmt(c.p90[i])}`
         + (jv != null ? `<br><span style="color:#1e9e57">JAO P50 ${fmt(jv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(jv - f >= 0 ? '+' : '') + (jv - f).toFixed(1)})</span>` : '') : '')
         + (fv != null ? `<br><span style="color:#8b5cf6">Unified P50 ${fmt(fv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(fv - f >= 0 ? '+' : '') + (fv - f).toFixed(1)})</span>` : '') : '')
+        + (vv != null ? `<br><span style="color:#0d9488">v1.1 P50 ${fmt(vv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(vv - f >= 0 ? '+' : '') + (vv - f).toFixed(1)})</span>` : '') : '')
         + (av != null ? `<br>Actual ${fmt(av)}` + (f != null ? ` <span style="color:#8a97a8">(err ${(av - f).toFixed(1)})</span>` : '') : '');
       tip.classList.add('visible'); tip.setAttribute('aria-hidden', 'false');
       const vw = window.innerWidth, vh = window.innerHeight, tw = tip.offsetWidth, th = tip.offsetHeight;
@@ -5883,6 +5911,7 @@ function fcRenderHealth(zone) {
   }
   const J = fcState.payload.metrics_jao || {};   // shadow JAO challenger metrics
   const F = fcState.payload.metrics_fund || {};  // unified-v1 challenger metrics
+  const V = fcState.payload.metrics_v11 || {};   // hybrid-v1.1 challenger metrics
   const order = fcState.payload.zones || Object.keys(M);
   const rows = order.map(z => {
     const s = M[z]; if (!s || !s.length) return '';
@@ -5891,6 +5920,7 @@ function fcRenderHealth(zone) {
     const js = J[z] || []; const jm7 = js.length ? fcMean(js.slice(-7).map(x => x.mae)) : null;
     const fs = F[z] || []; const fm7 = fs.length ? fcMean(fs.slice(-7).map(x => x.mae)) : null;
     const fc7 = fs.length ? fcMean(fs.slice(-7).map(x => x.cov)) : null;
+    const vs = V[z] || []; const vm7 = vs.length ? fcMean(vs.slice(-7).map(x => x.mae)) : null;
     let arrow = '—', col = '';
     if (m7 != null && mp != null) { const d = m7 - mp; if (d < -1) { arrow = '↓ краще'; col = 'color:#1e7a3a'; } else if (d > 1) { arrow = '↑ гірше'; col = 'color:#a8281a'; } else arrow = '≈'; }
     const dtxt = (m7 != null && mp != null) ? ((m7 - mp >= 0 ? '+' : '') + (m7 - mp).toFixed(1)) : '';
@@ -5898,10 +5928,12 @@ function fcRenderHealth(zone) {
     if (jm7 != null && m7 != null) { const jd = jm7 - m7; jcol = jd < -0.3 ? 'color:#1e7a3a' : jd > 0.3 ? 'color:#a8281a' : ''; jdtxt = (jd >= 0 ? '+' : '') + jd.toFixed(1); }
     let ucol = '', udtxt = '—';   // Unified vs champion (negative = unified better)
     if (fm7 != null && m7 != null) { const ud = fm7 - m7; ucol = ud < -0.3 ? 'color:#1e7a3a' : ud > 0.3 ? 'color:#a8281a' : ''; udtxt = (ud >= 0 ? '+' : '') + ud.toFixed(1); }
-    return `<tr><td>${z}</td><td>${m7 != null ? m7.toFixed(1) : '—'}</td><td>${mp != null ? mp.toFixed(1) : '—'}</td><td style="${col}">${dtxt}</td><td style="color:#b8860b">${jm7 != null ? jm7.toFixed(1) : '—'}</td><td style="${jcol}">${jdtxt}</td><td style="color:#8b5cf6">${fm7 != null ? fm7.toFixed(1) : '—'}</td><td style="${ucol}">${udtxt}</td><td>${fc7 != null ? (fc7 * 100).toFixed(0) + '%' : (c7 != null ? (c7 * 100).toFixed(0) + '%' : '—')}</td><td style="${col}">${arrow}</td></tr>`;
+    let vcol = '', vdtxt = '—';   // v1.1 vs champion (negative = v1.1 better)
+    if (vm7 != null && m7 != null) { const vd = vm7 - m7; vcol = vd < -0.3 ? 'color:#1e7a3a' : vd > 0.3 ? 'color:#a8281a' : ''; vdtxt = (vd >= 0 ? '+' : '') + vd.toFixed(1); }
+    return `<tr><td>${z}</td><td>${m7 != null ? m7.toFixed(1) : '—'}</td><td>${mp != null ? mp.toFixed(1) : '—'}</td><td style="${col}">${dtxt}</td><td style="color:#b8860b">${jm7 != null ? jm7.toFixed(1) : '—'}</td><td style="${jcol}">${jdtxt}</td><td style="color:#8b5cf6">${fm7 != null ? fm7.toFixed(1) : '—'}</td><td style="${ucol}">${udtxt}</td><td style="color:#0d9488">${vm7 != null ? vm7.toFixed(1) : '—'}</td><td style="${vcol}">${vdtxt}</td><td>${fc7 != null ? (fc7 * 100).toFixed(0) + '%' : (c7 != null ? (c7 * 100).toFixed(0) + '%' : '—')}</td><td style="${col}">${arrow}</td></tr>`;
   }).join('');
-  tbl.innerHTML = `<thead><tr><th>Zone</th><th>MAE 7д</th><th>поп.7д</th><th>Δ</th><th title="JAO challenger MAE 7д">JAO</th><th title="JAO − champion">JAO−b</th><th title="Unified MAE 7д" style="color:#8b5cf6">Unified</th><th title="Unified − champion (− = Unified краще)">Uni−b</th><th title="Unified coverage">Cover</th><th>Тренд</th></tr></thead><tbody>${rows}</tbody>`;
-  fcDrawHealthChart(M[zone] || [], zone, J[zone] || [], F[zone] || []);
+  tbl.innerHTML = `<thead><tr><th>Zone</th><th>MAE 7д</th><th>поп.7д</th><th>Δ</th><th title="JAO challenger MAE 7д">JAO</th><th title="JAO − champion">JAO−b</th><th title="Unified MAE 7д" style="color:#8b5cf6">Unified</th><th title="Unified − champion (− = Unified краще)">Uni−b</th><th title="hybrid-v1.1 MAE 7д" style="color:#0d9488">v1.1</th><th title="v1.1 − champion (− = v1.1 краще)">v1.1−b</th><th title="Unified coverage">Cover</th><th>Тренд</th></tr></thead><tbody>${rows}</tbody>`;
+  fcDrawHealthChart(M[zone] || [], zone, J[zone] || [], F[zone] || [], V[zone] || []);
   if (gh) gh.textContent = 'Тренд якості (MAE)';
   if (gsub) gsub.textContent = 'Нижче = точніше. 7д проти попередніх 7д.';
   if (gb) {
@@ -5909,16 +5941,17 @@ function fcRenderHealth(zone) {
     let v = 'замало даних';
     if (l != null && p != null) { const d = l - p; v = d < -1 ? `покращується (MAE ${p.toFixed(0)}→${l.toFixed(0)})` : d > 1 ? `погіршується (MAE ${p.toFixed(0)}→${l.toFixed(0)})` : `стабільно (~${l.toFixed(0)})`; }
     gb.innerHTML = `<div class="fc-guide-band"><span class="h">${zone}</span><span class="why">${v}</span></div>`
-      + `<p style="font-size:11px;color:#5b6271;margin:8px 0 0">Тижневий авто-огляд: <code>model_weekly_review.py</code>. Champion/challenger + авто-rollback — у плані.</p>`;
+      + `<div style="margin-top:8px">${fcChallengerBadges()}</div>`
+      + `<p style="font-size:11px;color:#5b6271;margin:8px 0 0">Тижневий авто-огляд: <code>model_weekly_review.py</code> (paired-таблиця challengers). Промоушен: ≥14д OOS, краще на наборі, не гірше у жодній ключовій зоні.</p>`;
   }
-  if (leg) leg.innerHTML = `<span style="color:${FC_BLUE}">■ MAE щодня</span> &nbsp; <span style="color:#1f2430">■ 7-дн champion</span> &nbsp; <span style="color:#b8860b">▭ JAO 7-дн</span> &nbsp; <span style="color:#8b5cf6">▭ Unified 7-дн</span>`;
+  if (leg) leg.innerHTML = `<span style="color:${FC_BLUE}">■ MAE щодня</span> &nbsp; <span style="color:#1f2430">■ 7-дн champion</span> &nbsp; <span style="color:#b8860b">▭ JAO 7-дн</span> &nbsp; <span style="color:#8b5cf6">▭ Unified 7-дн</span> &nbsp; <span style="color:#0d9488">▭ v1.1 7-дн</span>`;
   if (sum) { const a = fcMean(order.flatMap(z => (M[z] || []).slice(-7).map(x => x.mae))); sum.textContent = a != null ? `Середній MAE по ядру (останні 7д): ${a.toFixed(1)} €/MWh — нижче = краще` : '—'; }
 }
 
-function fcDrawHealthChart(series, zone, jaoSeries, fundSeries) {
+function fcDrawHealthChart(series, zone, jaoSeries, fundSeries, v11Series) {
   const svg = document.getElementById('fc-chart'); if (!svg) return;
   fcState.chart = null;   // disable hourly hover in this mode
-  const W = 1180, H = 460, padL = 52, padR = 20, padT = 30, padB = 46, INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', JAOC = '#b8860b', UNIC = '#8b5cf6';
+  const W = 1180, H = 460, padL = 52, padR = 20, padT = 30, padB = 46, INK = '#1f2430', MUT = '#5b6271', GRID = '#e6e8ed', JAOC = '#b8860b', UNIC = '#8b5cf6', VTEAL = '#0d9488';
   if (!series.length) { svg.innerHTML = `<text x="20" y="40" fill="${MUT}" font-size="13">Нема метрик для ${zone}.</text>`; return; }
   const mae = series.map(x => x.mae), n = series.length;
   // align challenger MAE onto champion dates (by day), nulls where missing
@@ -5928,11 +5961,14 @@ function fcDrawHealthChart(series, zone, jaoSeries, fundSeries) {
   const fmap = {}; (fundSeries || []).forEach(x => { fmap[x.d] = x.mae; });
   const fmae = series.map(x => (fmap[x.d] != null ? fmap[x.d] : null));
   const hasFund = fmae.some(v => v != null);
+  const vmap = {}; (v11Series || []).forEach(x => { vmap[x.d] = x.mae; });
+  const vmae = series.map(x => (vmap[x.d] != null ? vmap[x.d] : null));
+  const hasV11 = vmae.some(v => v != null);
   const xs = i => padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1));
-  const allv = mae.concat(jmae.filter(v => v != null)).concat(fmae.filter(v => v != null));
+  const allv = mae.concat(jmae.filter(v => v != null)).concat(fmae.filter(v => v != null)).concat(vmae.filter(v => v != null));
   const hi = (Math.max(...allv) * 1.15) || 10, lo = 0, ys = v => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
   const rollOf = arr => arr.map((_, i) => { const s = arr.slice(Math.max(0, i - 6), i + 1).filter(v => v != null); return s.length ? s.reduce((a, b) => a + b, 0) / s.length : null; });
-  const roll = rollOf(mae), jroll = hasJao ? rollOf(jmae) : [], froll = hasFund ? rollOf(fmae) : [];
+  const roll = rollOf(mae), jroll = hasJao ? rollOf(jmae) : [], froll = hasFund ? rollOf(fmae) : [], vroll = hasV11 ? rollOf(vmae) : [];
   const line = arr => { let d = '', pen = false; arr.forEach((v, i) => { if (v == null) { pen = false; return; } d += (pen ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(v).toFixed(1) + ' '; pen = true; }); return d.trim(); };
   const gy = []; for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4; gy.push(`<line x1="${padL}" y1="${ys(v).toFixed(1)}" x2="${W - padR}" y2="${ys(v).toFixed(1)}" stroke="${GRID}"/><text x="${padL - 7}" y="${(ys(v) + 3).toFixed(1)}" fill="${MUT}" font-size="11" text-anchor="end">${v.toFixed(0)}</text>`); }
   const step = Math.max(1, Math.floor(n / 8)), xt = [];
@@ -5940,11 +5976,254 @@ function fcDrawHealthChart(series, zone, jaoSeries, fundSeries) {
   const dots = mae.map((v, i) => `<circle cx="${xs(i).toFixed(1)}" cy="${ys(v).toFixed(1)}" r="2.6" fill="${FC_BLUE}"/>`).join('');
   const jaoPath = hasJao ? `<path d="${line(jroll)}" fill="none" stroke="${JAOC}" stroke-width="2.4" stroke-dasharray="5 4"/>` : '';
   const fundPath = hasFund ? `<path d="${line(froll)}" fill="none" stroke="${UNIC}" stroke-width="2.4" stroke-dasharray="2 3"/>` : '';
-  const leg = `<text x="${W - padR}" y="16" fill="${MUT}" font-size="10" text-anchor="end">— champion${hasJao ? ' · JAO' : ''}${hasFund ? ' · Unified' : ''} · €/MWh MAE (7-дн)</text>`;
+  const v11Path = hasV11 ? `<path d="${line(vroll)}" fill="none" stroke="${VTEAL}" stroke-width="2.4" stroke-dasharray="7 3"/>` : '';
+  const leg = `<text x="${W - padR}" y="16" fill="${MUT}" font-size="10" text-anchor="end">— champion${hasJao ? ' · JAO' : ''}${hasFund ? ' · Unified' : ''}${hasV11 ? ' · v1.1' : ''} · €/MWh MAE (7-дн)</text>`;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('width', '100%');
   svg.innerHTML = `<text x="${padL}" y="16" fill="${INK}" font-size="13" font-weight="600">Якість моделі — MAE по днях (нижче = краще) · ${zone}</text>`
     + gy.join('') + xt.join('')
     + `<path d="${line(mae)}" fill="none" stroke="${FC_BLUE}" stroke-width="1.6" opacity="0.55"/>` + dots
     + `<path d="${line(roll)}" fill="none" stroke="${INK}" stroke-width="2.6"/>`
-    + jaoPath + fundPath + leg;
+    + jaoPath + fundPath + v11Path + leg;
+}
+
+// ===== 2026-07-03 Forecast-tab additions (F1 brief, F2 radar, F3 risk, =========
+// ===== F4 drivers, F7 regime, F8 analogs, F11 promotion badges) ================
+const FC_CHIP = 'display:inline-block;padding:3px 10px;border:1px solid #d8dee8;border-radius:12px;font-size:12px;color:#3a4453;background:#f7f9fc;margin:2px 6px 2px 0';
+const FC_CHIP_RED = FC_CHIP + ';background:#fdecea;border-color:#f2b8b5;color:#a8281a';
+const FC_CHIP_BLUE = FC_CHIP + ';background:#eaf1fb;border-color:#c5d5ef;color:#2b4c7e';
+
+function fcLatestDate() {
+  const P = fcState.payload; if (!P || !P.dates || !P.dates.length) return null;
+  for (let i = P.dates.length - 1; i >= 0; i--) {
+    const d = P.dates[i];
+    if ((P.zones || []).some(z => P.data[z] && P.data[z][d] && (P.data[z][d]['10:45'] || P.data[z][d]['09:30']))) return d;
+  }
+  return null;
+}
+function fcAvgArr(a) { const v = (a || []).filter(x => x != null); return v.length ? v.reduce((x, y) => x + y, 0) / v.length : null; }
+function fcHideDrivers() { const el = document.getElementById('fc-drivers'); if (el) { el.classList.add('hidden'); el.innerHTML = ''; } }
+
+// F7 — regime strip (§12.1 markers: season bucket, vol percentile, spike state)
+function fcRenderRegime(za) {
+  const el = document.getElementById('fc-regime'); if (!el) return;
+  const R = fcState.payload && fcState.payload.regime;
+  if (!R) { el.innerHTML = ''; return; }
+  const zi = R.zones && R.zones[za];
+  const chips = [`<span style="${FC_CHIP}">Сезон: <b>${R.bucket}</b></span>`];
+  if (zi) {
+    if (zi.vol_pct != null) chips.push(`<span style="${zi.vol_pct >= 90 ? FC_CHIP_RED : FC_CHIP}">Vol30 ${za}: ${zi.vol_pct}-й pct (2р)${zi.vol_pct >= 90 ? ' — HIGH-VOL режим' : ''}</span>`);
+    if (zi.avg3 != null) chips.push(`<span style="${zi.spike ? FC_CHIP_RED : FC_CHIP}">${za} 3д avg ${zi.avg3} €${zi.spike ? ' — спайк-режим' : ''}</span>`);
+  }
+  chips.push(`<span style="${FC_CHIP};color:#8a97a8;border-style:dashed" title="Класифікація режиму — CLAUDE.md §12.1. HIGH-VOL: ширші entry/exit, premium на short-dated optionality.">режим-маркери §12.1</span>`);
+  el.innerHTML = chips.join(' ');
+}
+
+// F2 core — all-pairs D+1 spread computation (expensive − cheap orientation)
+function fcComputeRadar(t) {
+  const P = fcState.payload, D = P.drivers || {}, out = [];
+  const zs = (P.zones || []).filter(z => P.data[z] && P.data[z][t] && (P.data[z][t]['10:45'] || P.data[z][t]['09:30']));
+  const S = {}; zs.forEach(z => { const e = P.data[z][t]; S[z] = e['10:45'] || e['09:30']; });
+  for (let i = 0; i < zs.length; i++) for (let j = i + 1; j < zs.length; j++) {
+    const A = zs[i], B = zs[j];
+    const raw = S[A].p50.map((v, k) => (v != null && S[B].p50[k] != null) ? v - S[B].p50[k] : null);
+    const avg0 = fcAvgArr(raw); if (avg0 == null) continue;
+    const [X, Y, s] = avg0 >= 0 ? [A, B, raw] : [B, A, raw.map(v => v == null ? null : -v)];
+    const avg = Math.abs(avg0);
+    const topIdx = s.map((v, k) => [v, k]).filter(x => x[0] != null).sort((a, b) => b[0] - a[0]).slice(0, 4).map(x => x[1]);
+    const mx = topIdx.length ? s[topIdx[0]] : null;
+    const lo = fcAvgArr(S[X].p10.map((v, k) => (v != null && S[Y].p90[k] != null) ? v - S[Y].p90[k] : null));
+    const dX = D[X] && D[X][t], dY = D[Y] && D[Y][t];
+    let exec = 'н/д', execMw = null;
+    if (dX && dY && dX.imp && dY.exp) {
+      const mins = topIdx.map(k => Math.min(dX.imp[k] ?? Infinity, dY.exp[k] ?? Infinity)).filter(v => isFinite(v));
+      if (mins.length) { execMw = Math.min(...mins); exec = execMw <= 0 ? '⛔ 0 MW' : (execMw < 300 ? `⚠ ${execMw.toFixed(0)} MW` : `✅ ${execMw.toFixed(0)} MW`); }
+    }
+    let pct = null; const hist = [];
+    (P.dates || []).forEach(d => {
+      if (d >= t) return;
+      const ax = P.data[X] && P.data[X][d] && P.data[X][d].actual, ay = P.data[Y] && P.data[Y][d] && P.data[Y][d].actual;
+      if (!ax || !ay) return;
+      const v = fcAvgArr(ax.map((q, k) => (q != null && ay[k] != null) ? q - ay[k] : null));
+      if (v != null) hist.push(v);
+    });
+    if (hist.length >= 10) pct = Math.round(100 * hist.filter(v => v < avg).length / hist.length);
+    out.push({ pair: `${X}−${Y}`, avg, mx, lo, exec, execMw, pct, n30: hist.length });
+  }
+  out.sort((a, b) => b.avg - a.avg);
+  return out;
+}
+
+// F2 — Spread Radar mode
+function fcRenderRadar() {
+  const t = fcLatestDate();
+  const tbl = document.getElementById('fc-table'), leg = document.getElementById('fc-legend'),
+        sum = document.getElementById('fc-summary'), gh = document.querySelector('#fc-guide h4'),
+        gsub = document.querySelector('#fc-guide .fc-guide-sub'), gb = document.getElementById('fc-guide-body'),
+        ttl = document.getElementById('fc-table-title');
+  document.getElementById('fc-chart').innerHTML = ''; fcState.chart = null;
+  if (leg) leg.innerHTML = '';
+  if (ttl) ttl.textContent = `🎯 Spread Radar — D+1 ${t || ''}`;
+  const rows = t ? fcComputeRadar(t) : [];
+  const fmt = v => v == null ? '—' : v.toFixed(1);
+  tbl.innerHTML = `<thead><tr><th>Спред (дорога−дешева)</th><th>avg P50, €</th><th>max год, €</th>`
+    + `<th title="Консервативна межа: P10 дорогої − P90 дешевої (avg)">low band</th>`
+    + `<th title="Перцентиль завтрашнього спреду проти realised daily спредів за вікно">~45д pct</th>`
+    + `<th title="min(import headroom дорожчої, export headroom дешевшої) по топ-4 годинах — zone-level JAO proxy, НЕ border ATC">headroom</th></tr></thead><tbody>`
+    + (rows.length ? rows.map(r =>
+        `<tr><td><b>${r.pair}</b></td><td>${fmt(r.avg)}</td><td>${fmt(r.mx)}</td><td style="color:${r.lo > 0 ? '#1e7a3a' : '#5b6271'}">${fmt(r.lo)}</td><td>${r.pct == null ? '—' : r.pct + '%'}</td><td>${r.exec}</td></tr>`).join('')
+      : '<tr><td colspan="6" style="padding:14px">Нема прогнозу на D+1.</td></tr>') + `</tbody>`;
+  if (sum) sum.textContent = t ? `Всі пари core-зон на ${t}, сортування за |avg P50 spread|. Headroom — zone-level proxy; виконуваність великих кліпів перевіряти окремо (§10).` : '—';
+  if (gh) gh.textContent = 'Як читати радар';
+  if (gsub) gsub.textContent = '';
+  if (gb) gb.innerHTML = `<p style="font-size:12px;color:#3a4453;margin:0"><b>Спред</b> = P50 дорожчої − P50 дешевої.<br><br><b>low band</b> — якщо &gt;0 (зелений), спред тримається навіть у несприятливому квантилі обох ніг.<br><br><b>pct</b> — наскільки завтрашній спред великий проти realised (100% = ширший за всі дні вікна) — великий і рідкісний спред частіше mean-revert-иться.<br><br><b>headroom</b> — ⛔ = JAO-коридор закритий у топ-години: спред «на папері», фізично не звести.</p>`;
+}
+
+// F3 — Tail-Risk heatmap mode
+function fcRenderRisk() {
+  const P = fcState.payload, t = fcLatestDate();
+  const tbl = document.getElementById('fc-table'), leg = document.getElementById('fc-legend'),
+        sum = document.getElementById('fc-summary'), gh = document.querySelector('#fc-guide h4'),
+        gsub = document.querySelector('#fc-guide .fc-guide-sub'), gb = document.getElementById('fc-guide-body'),
+        ttl = document.getElementById('fc-table-title');
+  document.getElementById('fc-chart').innerHTML = ''; fcState.chart = null;
+  if (leg) leg.innerHTML = '';
+  if (ttl) ttl.textContent = `🔥 Tail Risk — D+1 ${t || ''}`;
+  const SPIKE = 150, SPIKE2 = 250, NEG = 0;
+  let head = '<tr><th style="text-align:left">Zone</th>';
+  for (let h = 1; h <= 24; h++) head += `<th style="padding:2px 3px;font-size:10px">${h}</th>`;
+  head += '</tr>';
+  let nSpike = 0, nNeg = 0;
+  const body = (P.zones || []).map(z => {
+    const e = P.data[z] && P.data[z][t]; const s = e && (e['10:45'] || e['09:30']);
+    if (!s) return '';
+    let tds = '';
+    for (let i = 0; i < 24; i++) {
+      const p10 = s.p10[i], p50 = s.p50[i], p90 = s.p90[i];
+      let bg = '', fg = '#3a4453', tip = `h${i + 1}: P10 ${p10 == null ? '—' : p10.toFixed(0)} / P50 ${p50 == null ? '—' : p50.toFixed(0)} / P90 ${p90 == null ? '—' : p90.toFixed(0)}`;
+      if (p10 != null && p10 < NEG) { bg = p10 < -20 ? '#2b4c7e' : '#9db8dd'; fg = p10 < -20 ? '#fff' : '#1f2430'; nNeg++; }
+      else if (p90 != null && p90 >= SPIKE2) { bg = '#a8281a'; fg = '#fff'; nSpike++; }
+      else if (p90 != null && p90 >= SPIKE) { bg = '#f0b28e'; nSpike++; }
+      tds += `<td title="${tip}" style="padding:2px 3px;font-size:10px;text-align:center;background:${bg};color:${fg}">${p50 == null ? '' : p50.toFixed(0)}</td>`;
+    }
+    return `<tr><td style="font-weight:600">${z}</td>${tds}</tr>`;
+  }).join('');
+  tbl.innerHTML = `<thead>${head}</thead><tbody>${body || '<tr><td colspan="25" style="padding:14px">Нема прогнозу на D+1.</td></tr>'}</tbody>`;
+  if (sum) sum.textContent = `Числа = P50. Помаранчеве/червоне: P90 ≥ ${SPIKE}/${SPIKE2} € (спайк-ризик, ${nSpike} zone-hours). Синє: P10 < 0 € (ризик негативних, ${nNeg} zone-hours). Hover по клітинці → квантилі.`;
+  if (gh) gh.textContent = 'Як читати';
+  if (gsub) gsub.textContent = '';
+  if (gb) gb.innerHTML = `<p style="font-size:12px;color:#3a4453;margin:0">Це найцінніше з ймовірнісного прогнозу — <b>хвости</b>, а не P50.<br><br><span style="${FC_CHIP_RED}">P90 ≥ 150</span> — година зі спайк-ризиком: обережно з короткими позиціями/продажем peak.<br><br><span style="${FC_CHIP_BLUE}">P10 &lt; 0</span> — ризик негативних цін: curtailment-години, цікаво для гнучкого попиту/BESS-заряду.<br><br>Пороги статичні (150/250) — за потреби зробимо режим-залежними.</p>`;
+}
+
+// F4 + F8 — driver panel under the DAM view (+ analog days)
+function fcRenderDrivers(za, date) {
+  const el = document.getElementById('fc-drivers'); if (!el) return;
+  const D = fcState.payload.drivers, dz = D && D[za] && D[za][date];
+  if (!dz || !(dz.resid || []).some(v => v != null)) { fcHideDrivers(); return; }
+  el.classList.remove('hidden');
+  const W = 1180, H = 230, padL = 56, padR = 56, padT = 26, padB = 26;
+  const resid = dz.resid || [], norm = dz.norm || [], share = dz.share || [];
+  const vals = resid.concat(norm).filter(v => v != null);
+  let lo = Math.min(...vals), hi = Math.max(...vals); const pd = (hi - lo) * 0.1 || 5; lo -= pd; hi += pd;
+  const xs = i => padL + (W - padL - padR) * i / 23, ys = v => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
+  const ys2 = v => padT + (H - padT - padB) * (1 - v);
+  const line = arr => { let d = '', p = false; arr.forEach((v, i) => { if (v == null) { p = false; return; } d += (p ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(v).toFixed(1) + ' '; p = true; }); return d; };
+  let area = ''; { const pts = share.map((v, i) => v == null ? null : [xs(i), ys2(Math.min(1, v))]).filter(Boolean);
+    if (pts.length) area = 'M' + pts.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' L') + ` L${pts[pts.length - 1][0].toFixed(1)} ${ys2(0).toFixed(1)} L${pts[0][0].toFixed(1)} ${ys2(0).toFixed(1)} Z`; }
+  const gy = []; for (let k = 0; k <= 3; k++) { const v = lo + (hi - lo) * k / 3; gy.push(`<line x1="${padL}" y1="${ys(v).toFixed(1)}" x2="${W - padR}" y2="${ys(v).toFixed(1)}" stroke="#e6e8ed"/><text x="${padL - 6}" y="${(ys(v) + 3).toFixed(1)}" font-size="10" fill="#5b6271" text-anchor="end">${(v / 1000).toFixed(1)}k</text>`); }
+  const xt = []; for (let i = 0; i < 24; i += 2) xt.push(`<text x="${xs(i).toFixed(1)}" y="${H - 8}" font-size="10" fill="#5b6271" text-anchor="middle">${i + 1}</text>`);
+  const shareTicks = [0, 0.5, 1].map(v => `<text x="${W - padR + 6}" y="${(ys2(v) + 3).toFixed(1)}" font-size="10" fill="#1e7a3a">${(v * 100).toFixed(0)}%</text>`).join('');
+  const tightIdx = (dz.tight || []).map((v, i) => (v != null && v > 0) ? i : null).filter(v => v != null);
+  const tightMarks = tightIdx.map(i => `<rect x="${(xs(i) - 6).toFixed(1)}" y="${padT}" width="12" height="${H - padT - padB}" fill="#a8281a" fill-opacity="0.07"/>`).join('');
+  const chips = [];
+  let shMaxI = null; share.forEach((v, i) => { if (v != null && (shMaxI == null || v > share[shMaxI])) shMaxI = i; });
+  if (shMaxI != null) chips.push(`<span style="${FC_CHIP}">ВДЕ-частка max ${(share[shMaxI] * 100).toFixed(0)}% (h${shMaxI + 1})</span>`);
+  let rampI = null, rampV = -Infinity;
+  for (let i = 1; i < 24; i++) if (resid[i] != null && resid[i - 1] != null && resid[i] - resid[i - 1] > rampV) { rampV = resid[i] - resid[i - 1]; rampI = i; }
+  if (rampI != null) chips.push(`<span style="${FC_CHIP}">макс. рампа h${rampI}→h${rampI + 1}: +${rampV.toFixed(0)} MW</span>`);
+  if (tightIdx.length) chips.push(`<span style="${FC_CHIP_RED}">JAO tight: h ${tightIdx.map(i => i + 1).join(', ')}</span>`);
+  const impVals = (dz.imp || []).filter(v => v != null);
+  if (impVals.length) chips.push(`<span style="${FC_CHIP}">імпорт headroom min ${Math.min(...impVals).toFixed(0)} MW</span>`);
+  let anHtml = '';
+  const an = (date === fcLatestDate()) ? (fcState.payload.analogs || {})[za] : null;
+  if (an && an.length) anHtml = `<div style="margin-top:6px"><b style="font-size:12px">Дні-аналоги (residual-профіль, той самий day-type, ±60 doy):</b> `
+    + an.map(a => `<span style="${FC_CHIP_BLUE}" title="cosine similarity ${a.sim}">${a.d} · DAM avg ${a.avg_px == null ? '—' : a.avg_px + '€'} · sim ${a.sim}</span>`).join(' ')
+    + `<span style="font-size:11px;color:#8a97a8"> — що DAM реально робив у схожі дні (калібрування, не прогноз)</span></div>`;
+  el.innerHTML = `<h3 class="pd-block-title">Чому таке число — драйвери ${za} · ${date}</h3>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%">${tightMarks}${gy.join('')}${xt.join('')}
+      <path d="${area}" fill="#1e7a3a" fill-opacity="0.10"/>
+      <path d="${line(norm)}" fill="none" stroke="#8a97a8" stroke-width="1.8" stroke-dasharray="5 4"/>
+      <path d="${line(resid)}" fill="none" stroke="${FC_BLUE}" stroke-width="2.4"/>
+      ${shareTicks}
+      <text x="${padL}" y="14" font-size="12" font-weight="600" fill="#1f2430">Residual load D+1 (синя) vs 35д норма по годинах (пунктир) · ВДЕ-частка (зелена зона, права вісь %) · JAO tight (червоні смуги)</text></svg>
+    <div style="margin-top:4px">${chips.join(' ')}</div>${anHtml}`;
+}
+
+// F11 — challenger promotion badges (paired vs champion on shared zone-days)
+function fcChallengerBadges() {
+  const P = fcState.payload, M = (P && P.metrics) || {};
+  const mk = (name, S, color) => {
+    if (!S || !Object.keys(S).length) return '';
+    let wins = 0, tot = 0, dsum = 0;
+    Object.keys(M).forEach(z => {
+      const cmap = {}; (M[z] || []).slice(-14).forEach(x => { cmap[x.d] = x.mae; });
+      (S[z] || []).forEach(x => {
+        if (cmap[x.d] != null && x.mae != null) { tot++; dsum += x.mae - cmap[x.d]; if (x.mae < cmap[x.d]) wins++; }
+      });
+    });
+    if (!tot) return `<p style="font-size:12px;margin:2px 0"><span style="color:${color}">●</span> ${name}: накопичує OOS-історію…</p>`;
+    const dAvg = dsum / tot, pct = Math.round(100 * wins / tot);
+    const cand = dAvg < -0.3 && pct >= 55 && tot >= 110;   // ~11 зон × 10+ днів
+    return `<p style="font-size:12px;margin:2px 0"><span style="color:${color}">●</span> ${name} vs champion (14д, n=${tot} zone-days): краще у ${pct}%, ΔMAE ${dAvg >= 0 ? '+' : ''}${dAvg.toFixed(1)} €${cand ? ' — <b>кандидат на промоушен</b>' : ''}</p>`;
+  };
+  return mk('JAO', P.metrics_jao, '#b8860b') + mk('Unified', P.metrics_fund, '#8b5cf6') + mk('v1.1', P.metrics_v11, '#0d9488');
+}
+
+// F1 — Morning brief (levels, top spreads, risk hours, model yesterday)
+function fcRenderBrief() {
+  const P = fcState.payload, body = document.getElementById('fc-brief-body'),
+        ttl = document.getElementById('fc-brief-title');
+  if (!body || !P) return;
+  const t = fcLatestDate();
+  if (!t) { body.innerHTML = '—'; return; }
+  if (ttl) ttl.textContent = `🌅 Morning brief — D+1 ${t}`;
+  const fmt = (v, nd = 1) => v == null ? '—' : v.toFixed(nd);
+  const prev = (P.dates || []).filter(d => d < t).pop();
+  const rows = [];
+  for (const z of (P.zones || [])) {
+    const e = P.data[z] && P.data[z][t]; const s = e && (e['10:45'] || e['09:30']);
+    if (!s) continue;
+    const p50 = fcAvgArr(s.p50);
+    let ref = null;
+    if (prev && P.data[z][prev]) {
+      const pa = (P.data[z][prev].actual || []).filter(x => x != null);
+      if (pa.length >= 20) ref = pa.reduce((a, b) => a + b, 0) / pa.length;
+      else { const ps = P.data[z][prev]['10:45'] || P.data[z][prev]['09:30']; if (ps) ref = fcAvgArr(ps.p50); }
+    }
+    rows.push({ z, p50, d: (ref != null && p50 != null) ? p50 - ref : null,
+                spikes: s.p90.filter(v => v != null && v >= 150).length,
+                negs: s.p10.filter(v => v != null && v < 0).length });
+  }
+  rows.sort((a, b) => (b.p50 ?? -1) - (a.p50 ?? -1));
+  const lvl = rows.map(r => `<tr><td>${r.z}</td><td><b>${fmt(r.p50)}</b></td>`
+    + `<td style="color:${r.d > 2 ? '#a8281a' : r.d < -2 ? '#1e7a3a' : '#5b6271'}">${r.d == null ? '—' : (r.d >= 0 ? '+' : '') + r.d.toFixed(1)}</td>`
+    + `<td>${r.spikes ? '🔥' + r.spikes : ''}</td><td>${r.negs ? '−€' + r.negs : ''}</td></tr>`).join('');
+  const sp = fcComputeRadar(t).slice(0, 5);
+  const spRows = sp.map(r => `<tr><td><b>${r.pair}</b></td><td>${fmt(r.avg)}</td><td>${fmt(r.mx)}</td><td>${r.exec}</td></tr>`).join('');
+  let modelTxt = 'метрики ще накопичуються';
+  const M = P.metrics || {}; const last = [];
+  Object.keys(M).forEach(z => { const s = M[z]; if (s && s.length) last.push(s[s.length - 1]); });
+  if (last.length) {
+    const mae = fcMean(last.map(x => x.mae)), bias = fcMean(last.map(x => x.bias));
+    modelTxt = `останній оцінений день (${last[0].d}): MAE ${fmt(mae)} €/MWh · bias ${bias == null ? '—' : (bias >= 0 ? '+' : '') + bias.toFixed(1)} € (p50−факт)`;
+  }
+  body.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:18px;margin-top:8px">
+    <div style="flex:1.1;min-width:300px"><h4 style="margin:0 0 4px;font-size:13px">Рівні D+1 — P50 baseload, Δ до вчора</h4>
+      <table class="pd-table"><thead><tr><th>Zone</th><th>P50</th><th>Δ</th><th title="год з P90≥150 (спайк-ризик)">🔥</th><th title="год з P10<0 (негативні)">−€</th></tr></thead><tbody>${lvl}</tbody></table></div>
+    <div style="flex:1.1;min-width:300px"><h4 style="margin:0 0 4px;font-size:13px">Топ-5 спредів D+1</h4>
+      <table class="pd-table"><thead><tr><th>Пара</th><th>avg €</th><th>max h</th><th>headroom</th></tr></thead><tbody>${spRows || '<tr><td colspan="4">—</td></tr>'}</tbody></table>
+      <p style="font-size:11px;color:#8a97a8;margin:4px 0 0">Повна таблиця з band/percentile — режим 🎯 Spread Radar.</p></div>
+    <div style="flex:0.9;min-width:260px"><h4 style="margin:0 0 4px;font-size:13px">Модель</h4>
+      <p style="font-size:12px;margin:2px 0">${modelTxt}</p>${fcChallengerBadges()}
+      <p style="font-size:11px;color:#8a97a8;margin:4px 0 0">Хвостові ризики по годинах — режим 🔥 Tail Risk.</p></div>
+  </div>`;
 }
