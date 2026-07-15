@@ -5642,7 +5642,13 @@ function renderForecast() {
         zb = document.getElementById('fc-zone-b').value,
         date = document.getElementById('fc-date').value;
   const runs = [...document.querySelectorAll('[data-fc-run].active')].map(b => b.dataset.fcRun);
-  const primary = runs.includes('10:45') ? '10:45' : (runs[0] || '10:45');
+  // Prefer the 10:45 final run when it exists in the payload. Fall back to any
+  // other active run that actually has data so D+1 09:30 stays visible during
+  // the ~09:30→13:15 window when only the 09:30 run has been snapshotted yet.
+  // (Bug: 2026-07-15 — snapshot_publish only fired the morning slots; run1045
+  // hadn't reached publish() yet, so forecast.json had 09:30 but no 10:45 for
+  // D+1. Hardcoding primary='10:45' caused a hard "no forecast" for the whole
+  // Forecast tab even though 09:30 data was sitting right there.)
   const st = document.getElementById('fc-status');
   const sumEl = document.getElementById('fc-summary');
 
@@ -5653,14 +5659,27 @@ function renderForecast() {
   if (fcState.mode === 'risk')   { if (st) st.classList.add('hidden'); fcHideDrivers(); fcRenderRisk(); return; }
 
   const getSeries = run => fcState.mode === 'dam' ? fcSeries(za, date, run) : fcSpread(za, zb, date, run);
-  const sPrim = getSeries(primary);
+  let primary = runs.includes('10:45') ? '10:45' : (runs[0] || '10:45');
+  let sPrim = getSeries(primary);
+  let fellBackFrom = null;
+  if (!sPrim) {
+    const fb = runs.find(r => r !== primary && getSeries(r));
+    if (fb) { fellBackFrom = primary; primary = fb; sPrim = getSeries(primary); }
+  }
   if (!sPrim) {
     if (st) { st.textContent = 'No forecast for this selection.'; st.classList.remove('hidden'); }
     document.getElementById('fc-table').innerHTML = '';
     document.getElementById('fc-chart').innerHTML = '';
     return;
   }
-  if (st) st.classList.add('hidden');
+  if (st) {
+    if (fellBackFrom) {
+      st.textContent = `${fellBackFrom} run not published yet — showing ${primary} run.`;
+      st.classList.remove('hidden', 'error');
+    } else {
+      st.classList.add('hidden');
+    }
+  }
   const actual = fcState.mode === 'dam' ? fcActual(za, date)
     : (() => { const A = fcActual(za, date), B = fcActual(zb, date);
                return A.map((v, i) => (v == null || B[i] == null) ? null : +(v - B[i]).toFixed(1)); })();
