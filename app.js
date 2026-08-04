@@ -5582,12 +5582,8 @@ async function initForecastView() {
   // run group = multi-toggle
   document.querySelectorAll('[data-fc-run]').forEach(btn =>
     btn.addEventListener('click', () => { btn.classList.toggle('active'); renderForecast(); }));
-  const jaoCb = document.getElementById('fc-jao');
-  if (jaoCb) jaoCb.addEventListener('change', renderForecast);
   const fundCb = document.getElementById('fc-fund');
   if (fundCb) fundCb.addEventListener('change', renderForecast);
-  const v11Cb = document.getElementById('fc-v11');
-  if (v11Cb) v11Cb.addEventListener('change', renderForecast);
   [aSel, bSel, dSel].forEach(s => s.addEventListener('change', renderForecast));
   const exp = document.getElementById('fc-export');
   if (exp) exp.addEventListener('click', fcExportCsv);
@@ -5613,19 +5609,9 @@ function fcActual(zone, date) {
   const z = fcState.payload.data[zone];
   return (z && z[date] && z[date].actual) ? z[date].actual : new Array(24).fill(null);
 }
-function fcJaoSeries(zone, date, run) {   // shadow JAO challenger track
-  const J = fcState.payload.jao; if (!J) return null;
-  const z = J[zone];
-  return (z && z[date] && z[date][run]) ? z[date][run] : null;
-}
-function fcFundSeries(zone, date, run) {  // fundamental-v0 challenger track (Volue drivers)
+function fcFundSeries(zone, date, run) {  // unified-v1 co-champion track (ENTSO-E+Volue+JAO)
   const F = fcState.payload.fund; if (!F) return null;
   const z = F[zone];
-  return (z && z[date] && z[date][run]) ? z[date][run] : null;
-}
-function fcV11Series(zone, date, run) {   // hybrid-v1.1 challenger (recency+season+ramp)
-  const V = fcState.payload.v11; if (!V) return null;
-  const z = V[zone];
   return (z && z[date] && z[date][run]) ? z[date][run] : null;
 }
 function fcSpread(a, b, date, run) {
@@ -5653,7 +5639,14 @@ function renderForecast() {
   const sumEl = document.getElementById('fc-summary');
 
   fcRenderRegime(za);
-  fcRenderBrief();
+  // Morning brief + chart belong to the DAM/Spread views only. Radar/Risk/Health
+  // (2026-08-04, user): no empty chart area, no duplicated brief — table straight away.
+  const briefEl = document.getElementById('fc-brief');
+  const chartEl = document.getElementById('fc-chart');
+  const analytic = ['radar', 'risk', 'health'].includes(fcState.mode);
+  if (briefEl) briefEl.style.display = analytic ? 'none' : '';
+  if (chartEl) chartEl.style.display = (fcState.mode === 'radar') ? 'none' : '';
+  if (!analytic) fcRenderBrief();
   if (fcState.mode === 'health') { if (st) st.classList.add('hidden'); fcHideDrivers(); fcRenderHealth(za); return; }
   if (fcState.mode === 'radar')  { if (st) st.classList.add('hidden'); fcHideDrivers(); fcRenderRadar(); return; }
   if (fcState.mode === 'risk')   { if (st) st.classList.add('hidden'); fcHideDrivers(); fcRenderRisk(); return; }
@@ -5685,24 +5678,14 @@ function renderForecast() {
                return A.map((v, i) => (v == null || B[i] == null) ? null : +(v - B[i]).toFixed(1)); })();
   const title = fcState.mode === 'dam' ? `${za} · ${date}` : `${za} − ${zb} · ${date}`;
   const others = runs.filter(r => r !== primary).map(getSeries).filter(Boolean);
-  const jaoOn = !!(document.getElementById('fc-jao') && document.getElementById('fc-jao').checked);
-  let jaoS = null;
-  if (jaoOn && fcState.mode === 'dam') {        // shadow JAO challenger P50 — green line
-    jaoS = fcJaoSeries(za, date, primary);
-  }
   const fundOn = !!(document.getElementById('fc-fund') && document.getElementById('fc-fund').checked);
   let fundS = null;
-  if (fundOn && fcState.mode === 'dam') {        // fundamental-v0 challenger P50 — purple line
+  if (fundOn && fcState.mode === 'dam') {        // unified-v1 co-champion P50 — purple line
     fundS = fcFundSeries(za, date, primary);
   }
-  const v11On = !!(document.getElementById('fc-v11') && document.getElementById('fc-v11').checked);
-  let v11S = null;
-  if (v11On && fcState.mode === 'dam') {         // hybrid-v1.1 challenger P50 — teal line
-    v11S = fcV11Series(za, date, primary);
-  }
-  fcDrawChart(sPrim, others, actual, title, jaoS, fundS, v11S);
+  fcDrawChart(sPrim, others, actual, title, null, fundS, null);
   const guide = (fcState.mode === 'dam' && fcState.payload.guide) ? fcState.payload.guide[za] : null;
-  fcDrawTable(sPrim, actual, guide, jaoS, fundS, v11S);
+  fcDrawTable(sPrim, actual, guide, null, fundS, null);
   fcRenderGuide(guide, fcState.mode === 'dam' ? za : null);
   if (fcState.mode === 'dam') fcRenderDrivers(za, date); else fcHideDrivers();
   // two-runs visibility note
@@ -5712,24 +5695,12 @@ function renderForecast() {
     runNote = same ? ' · 09:30 ≡ 10:45 (ідентичні, поки модель не використовує JAO domain)'
                    : ' · показано обидва прогони (10:45 суцільна, 09:30 — помаранчевий пунктир)';
   }
-  if (jaoS) {
-    const dl = sPrim.p50.map((v, i) => (v != null && jaoS.p50[i] != null) ? Math.abs(v - jaoS.p50[i]) : null).filter(x => x != null);
-    const md = dl.length ? dl.reduce((a, b) => a + b, 0) / dl.length : 0;
-    runNote += ` · JAO-challenger (тіньовий, не промоут): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
-  }
   if (fundS) {
     const dl = sPrim.p50.map((v, i) => (v != null && fundS.p50[i] != null) ? Math.abs(v - fundS.p50[i]) : null).filter(x => x != null);
     const md = dl.length ? dl.reduce((a, b) => a + b, 0) / dl.length : 0;
-    runNote += ` · Unified (ENTSO-E+Volue+JAO, тіньовий): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
+    runNote += ` · Unified (ENTSO-E+Volue+JAO, co-champion): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
     const lg = document.getElementById('fc-legend');
     if (lg) lg.innerHTML += ' &nbsp; <span style="color:#8b5cf6">━ Unified</span>';
-  }
-  if (v11S) {
-    const dl = sPrim.p50.map((v, i) => (v != null && v11S.p50[i] != null) ? Math.abs(v - v11S.p50[i]) : null).filter(x => x != null);
-    const md = dl.length ? dl.reduce((a, b) => a + b, 0) / dl.length : 0;
-    runNote += ` · v1.1 (season+ramp, тіньовий): Δ P50 ≈ ${md.toFixed(1)} €/MWh`;
-    const lg = document.getElementById('fc-legend');
-    if (lg) lg.innerHTML += ' &nbsp; <span style="color:#0d9488">━ v1.1</span>';
   }
   const valid = sPrim.p50.filter(v => v != null);
   if (sumEl) sumEl.textContent = valid.length
@@ -5835,18 +5806,14 @@ function fcBindHover() {
     const slot = fcState.gran === 60 ? `Hour ${hr}` : `${String(hr - 1).padStart(2, '0')}:${String((i % 4) * 15).padStart(2, '0')}`;
     const g = document.getElementById('fc-cursor');
     const dot = (v, col) => v == null ? '' : `<circle cx="${x.toFixed(1)}" cy="${c.ys(v).toFixed(1)}" r="3.2" fill="${col}"/>`;
-    const jv = c.jao ? c.jao[i] : null;
     const fv = c.fund ? c.fund[i] : null;
-    const vv = c.v11 ? c.v11[i] : null;
     g.innerHTML = `<line x1="${x.toFixed(1)}" y1="${c.padT}" x2="${x.toFixed(1)}" y2="${c.H - c.padB}" stroke="#8a97a8" stroke-dasharray="3 3"/>`
-      + dot(c.p50[i], FC_BLUE) + dot(jv, '#1e9e57') + dot(fv, '#8b5cf6') + dot(vv, '#0d9488') + dot(c.a[i], FC_RED);
+      + dot(c.p50[i], FC_BLUE) + dot(fv, '#8b5cf6') + dot(c.a[i], FC_RED);
     const f = c.p50[i], av = c.a[i], fmt = v => v == null ? '—' : v.toFixed(1) + ' €';
     if (tip) {
-      tip.innerHTML = `<b>${slot} CET</b><br>P50 ${fmt(f)}<br>P10–P90 ${fmt(c.p10[i])} … ${fmt(c.p90[i])}`
-        + (jv != null ? `<br><span style="color:#1e9e57">JAO P50 ${fmt(jv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(jv - f >= 0 ? '+' : '') + (jv - f).toFixed(1)})</span>` : '') : '')
-        + (fv != null ? `<br><span style="color:#8b5cf6">Unified P50 ${fmt(fv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(fv - f >= 0 ? '+' : '') + (fv - f).toFixed(1)})</span>` : '') : '')
-        + (vv != null ? `<br><span style="color:#0d9488">v1.1 P50 ${fmt(vv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(vv - f >= 0 ? '+' : '') + (vv - f).toFixed(1)})</span>` : '') : '')
-        + (av != null ? `<br>Actual ${fmt(av)}` + (f != null ? ` <span style="color:#8a97a8">(err ${(av - f).toFixed(1)})</span>` : '') : '');
+      tip.innerHTML = `<b>${slot} CET</b><br>Прогноз ${fmt(f)}<br>Мін–Макс ${fmt(c.p10[i])} … ${fmt(c.p90[i])}`
+        + (fv != null ? `<br><span style="color:#8b5cf6">Unified ${fmt(fv)}</span>` + (f != null ? ` <span style="color:#8a97a8">(Δ ${(fv - f >= 0 ? '+' : '') + (fv - f).toFixed(1)})</span>` : '') : '')
+        + (av != null ? `<br>Факт ${fmt(av)}` + (f != null ? ` <span style="color:#8a97a8">(err ${(av - f).toFixed(1)})</span>` : '') : '');
       tip.classList.add('visible'); tip.setAttribute('aria-hidden', 'false');
       const vw = window.innerWidth, vh = window.innerHeight, tw = tip.offsetWidth, th = tip.offsetHeight;
       tip.style.left = `${Math.min(evt.clientX + 14, vw - tw - 8)}px`;
@@ -5869,68 +5836,68 @@ function fcDrawTable(s, act, guide, jao, fund, v11) {
   // P50 (Δ до champion) + its own P10…P90 band underneath, so the trader can
   // compare central estimates AND corridors of all models in one table.
   const models = [];
-  if (jao)  models.push({ key: 'jao', s: jao,  name: 'JAO',     col: '#1e9e57' });
-  if (fund) models.push({ key: 'uni', s: fund, name: 'Unified', col: '#8b5cf6' });
-  if (v11)  models.push({ key: 'v11', s: v11,  name: 'v1.1',    col: '#0d9488' });
-  const band = (ms, i) => (ms.p10 && ms.p90 && ms.p10[i] != null && ms.p90[i] != null)
-    ? `<div style="font-size:10px;color:#8a97a8;line-height:1.1">${ms.p10[i].toFixed(0)}…${ms.p90[i].toFixed(0)}</div>` : '';
-  const mTh = models.map(m =>
-    `<th title="${m.name} challenger (тіньовий): P50 (Δ до champion) + власний коридор P10…P90" style="color:${m.col}">${m.name}<div style="font-size:9px;font-weight:400;color:#8a97a8">P50 (Δ) · P10…P90</div></th>`).join('');
+  // 2026-08-04 redesign (user): two finalist models side-by-side, Мін/Прогноз/Макс
+  // semantics (adaptive empirical band), errors for BOTH models, nothing else.
+  const uni = fund;
   const rows = [];
-  const exp = [['slot_CET', 'P10', 'P50', 'P90']
-    .concat(models.flatMap(m => [`${m.key}_p10`, `${m.key}_p50`, `${m.key}_p90`]))
-    .concat(['actual', 'err', 'base'])];
+  const exp = [['slot_CET', 'base_min', 'base_fc', 'base_max']
+    .concat(uni ? ['uni_min', 'uni_fc', 'uni_max'] : [])
+    .concat(['actual', 'err_base', 'err_uni'])];
+  const errCell = e => e === '' ? '' : `<span style="color:${Math.abs(+e) > 25 ? '#a8281a' : '#5b6271'}">${e}</span>`;
   for (let h = 1; h <= 24; h++) {
     const i = h - 1;
-    const rec = guide && guide[i] ? guide[i].rec : null;        // 'P10'|'P50'|'P90'
-    const baseCell = rec ? `<span class="fc-q ${rec}">${rec}</span>` : '—';
     const sub = q15 ? [0, 1, 2, 3] : [0];
     for (const k of sub) {
       const f = s.p50[i], av = act[i];
       const err = (f != null && av != null) ? (av - f).toFixed(1) : '';
-      const mTds = models.map(m => {
-        const mv = m.s.p50[i];
-        const d = (mv != null && f != null) ? (mv - f >= 0 ? '+' : '') + (mv - f).toFixed(1) : '';
-        return `<td style="color:${m.col};white-space:nowrap">${fmt(mv)}${d ? ` <span style="color:#8a97a8;font-size:11px">(${d})</span>` : ''}${band(m.s, i)}</td>`;
-      }).join('');
-      rows.push(`<tr><td>${label(h, k)}</td><td${cls('P10', rec)}>${fmt(s.p10[i])}</td><td${cls('P50', rec)}>${fmt(f)}</td><td${cls('P90', rec)}>${fmt(s.p90[i])}</td>${mTds}<td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${err}</td><td>${baseCell}</td></tr>`);
+      const uf = uni ? uni.p50[i] : null;
+      const uerr = (uf != null && av != null) ? (av - uf).toFixed(1) : '';
+      const uTds = uni
+        ? `<td style="color:#8b5cf6">${fmt(uni.p10 ? uni.p10[i] : null)}</td><td style="color:#8b5cf6;font-weight:600">${fmt(uf)}</td><td style="color:#8b5cf6">${fmt(uni.p90 ? uni.p90[i] : null)}</td>`
+        : '';
+      rows.push(`<tr><td>${label(h, k)}</td><td>${fmt(s.p10[i])}</td><td style="font-weight:600">${fmt(f)}</td><td>${fmt(s.p90[i])}</td>${uTds}`
+        + `<td>${av == null ? '<span style="color:#8a97a8">—</span>' : fmt(av)}</td><td>${errCell(err)}</td><td>${errCell(uerr)}</td></tr>`);
       exp.push([label(h, k), s.p10[i], s.p50[i], s.p90[i]]
-        .concat(models.flatMap(m => [m.s.p10 && m.s.p10[i] != null ? m.s.p10[i] : '',
-                                     m.s.p50[i] != null ? m.s.p50[i] : '',
-                                     m.s.p90 && m.s.p90[i] != null ? m.s.p90[i] : '']))
-        .concat([av == null ? '' : av, err, rec || '']));
+        .concat(uni ? [uni.p10 && uni.p10[i] != null ? uni.p10[i] : '',
+                       uf != null ? uf : '',
+                       uni.p90 && uni.p90[i] != null ? uni.p90[i] : ''] : [])
+        .concat([av == null ? '' : av, err, uerr]));
     }
   }
   // Baseload average row (mean over the 24 hours) — quick read of the day's level.
   const avg = arr => { const v = (arr || []).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
   const aP10 = avg(s.p10), aP50 = avg(s.p50), aP90 = avg(s.p90), aAct = avg(act);
   const aErr = (aP50 != null && aAct != null) ? (aAct - aP50).toFixed(1) : '';
-  const mFoot = models.map(m => {
-    const a50 = avg(m.s.p50), a10 = avg(m.s.p10), a90 = avg(m.s.p90);
-    const b = (a10 != null && a90 != null)
-      ? `<div style="font-size:10px;color:#8a97a8;font-weight:400">${a10.toFixed(0)}…${a90.toFixed(0)}</div>` : '';
-    return `<td style="color:${m.col}">${fmt(a50)}${b}</td>`;
-  }).join('');
+  const aU50 = uni ? avg(uni.p50) : null;
+  const aUErr = (aU50 != null && aAct != null) ? (aAct - aU50).toFixed(1) : '';
+  const uFoot = uni
+    ? `<td style="color:#8b5cf6">${fmt(uni.p10 ? avg(uni.p10) : null)}</td><td style="color:#8b5cf6">${fmt(aU50)}</td><td style="color:#8b5cf6">${fmt(uni.p90 ? avg(uni.p90) : null)}</td>`
+    : '';
   const foot = `<tfoot><tr style="font-weight:700;border-top:2px solid #c9d2dd;background:#f3f6fa">`
-    + `<td>Avg baseload</td><td>${fmt(aP10)}</td><td>${fmt(aP50)}</td><td>${fmt(aP90)}</td>${mFoot}`
-    + `<td>${aAct == null ? '<span style="color:#8a97a8">—</span>' : fmt(aAct)}</td><td>${aErr}</td><td></td></tr></tfoot>`;
+    + `<td>Avg baseload</td><td>${fmt(aP10)}</td><td>${fmt(aP50)}</td><td>${fmt(aP90)}</td>${uFoot}`
+    + `<td>${aAct == null ? '<span style="color:#8a97a8">—</span>' : fmt(aAct)}</td><td>${aErr}</td><td>${aUErr}</td></tr></tfoot>`;
   exp.push(['Avg_baseload', aP10 == null ? '' : aP10.toFixed(2), aP50 == null ? '' : aP50.toFixed(2),
             aP90 == null ? '' : aP90.toFixed(2)]
-            .concat(models.flatMap(m => [avg(m.s.p10) == null ? '' : avg(m.s.p10).toFixed(2),
-                                         avg(m.s.p50) == null ? '' : avg(m.s.p50).toFixed(2),
-                                         avg(m.s.p90) == null ? '' : avg(m.s.p90).toFixed(2)]))
-            .concat([aAct == null ? '' : aAct.toFixed(2), aErr, '']));
+            .concat(uni ? [avg(uni.p10) == null ? '' : avg(uni.p10).toFixed(2),
+                           aU50 == null ? '' : aU50.toFixed(2),
+                           avg(uni.p90) == null ? '' : avg(uni.p90).toFixed(2)] : [])
+            .concat([aAct == null ? '' : aAct.toFixed(2), aErr, aUErr]));
+  const uTh = uni
+    ? `<th style="color:#8b5cf6" title="Unified (ENTSO-E+Volue+JAO)">Uni Мін</th><th style="color:#8b5cf6">Uni Прогноз</th><th style="color:#8b5cf6">Uni Макс</th>`
+    : '';
   document.getElementById('fc-table').innerHTML =
-    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th><th>P10</th><th>P50</th><th>P90</th>${mTh}<th>Actual</th><th>Err</th><th title="Що брати за базу за останніми помилками">Base</th></tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
+    `<thead><tr><th>${q15 ? 'Slot' : 'Hour'} CET</th>`
+    + `<th title="Адаптивний мін: P50 + trailing-21д q10 залишків (zone×hour-bucket)">Мін</th><th>Прогноз</th><th title="Адаптивний макс: P50 + trailing-21д q90 залишків">Макс</th>${uTh}`
+    + `<th>Факт</th><th title="факт − baseline прогноз">Δ Base</th><th title="факт − Unified прогноз" style="color:#8b5cf6">Δ Uni</th></tr></thead><tbody>${rows.join('')}</tbody>${foot}`;
   fcState.exportRows = exp;
   fcState.exportName = (fcState.mode === 'dam'
     ? document.getElementById('fc-zone-a').value
     : document.getElementById('fc-zone-a').value + '-' + document.getElementById('fc-zone-b').value)
     + '_' + document.getElementById('fc-date').value + (q15 ? '_15min' : '_hourly');
   const lg = document.getElementById('fc-legend');
-  if (lg) lg.innerHTML = `<span style="color:${FC_BLUE}">■ P50 forecast</span> &nbsp; <span style="color:${FC_BLUE};opacity:.5">▮ P10–P90</span>`
-    + models.map(m => ` &nbsp; <span style="color:${m.col}">━ ${m.name} P50</span>`).join('')
-    + ` &nbsp; <span style="color:${FC_RED}">■ Actual</span>`;
+  if (lg) lg.innerHTML = `<span style="color:${FC_BLUE}">■ Baseline (прогноз + мін–макс)</span>`
+    + (uni ? ` &nbsp; <span style="color:#8b5cf6">━ Unified</span>` : '')
+    + ` &nbsp; <span style="color:${FC_RED}">■ Факт</span>`;
 }
 
 function fcExportCsv() {
@@ -5974,31 +5941,23 @@ function fcRenderHealth(zone) {
     tbl.innerHTML = '<tbody><tr><td style="padding:14px">Метрики ще накопичуються (щодня з relabel).</td></tr></tbody>';
     if (gb) gb.innerHTML = ''; return;
   }
-  const J = fcState.payload.metrics_jao || {};   // shadow JAO challenger metrics
-  const F = fcState.payload.metrics_fund || {};  // unified-v1 challenger metrics
-  const V = fcState.payload.metrics_v11 || {};   // hybrid-v1.1 challenger metrics
+  const F = fcState.payload.metrics_fund || {};  // unified-v1 co-champion metrics
   const order = fcState.payload.zones || Object.keys(M);
   const rows = order.map(z => {
     const s = M[z]; if (!s || !s.length) return '';
     const m7 = fcMean(s.slice(-7).map(x => x.mae)), mp = fcMean(s.slice(-14, -7).map(x => x.mae)),
           c7 = fcMean(s.slice(-7).map(x => x.cov));
-    const js = J[z] || []; const jm7 = js.length ? fcMean(js.slice(-7).map(x => x.mae)) : null;
     const fs = F[z] || []; const fm7 = fs.length ? fcMean(fs.slice(-7).map(x => x.mae)) : null;
     const fc7 = fs.length ? fcMean(fs.slice(-7).map(x => x.cov)) : null;
-    const vs = V[z] || []; const vm7 = vs.length ? fcMean(vs.slice(-7).map(x => x.mae)) : null;
     let arrow = '—', col = '';
     if (m7 != null && mp != null) { const d = m7 - mp; if (d < -1) { arrow = '↓ краще'; col = 'color:#1e7a3a'; } else if (d > 1) { arrow = '↑ гірше'; col = 'color:#a8281a'; } else arrow = '≈'; }
     const dtxt = (m7 != null && mp != null) ? ((m7 - mp >= 0 ? '+' : '') + (m7 - mp).toFixed(1)) : '';
-    let jcol = '', jdtxt = '—';   // JAO vs champion (negative = JAO better)
-    if (jm7 != null && m7 != null) { const jd = jm7 - m7; jcol = jd < -0.3 ? 'color:#1e7a3a' : jd > 0.3 ? 'color:#a8281a' : ''; jdtxt = (jd >= 0 ? '+' : '') + jd.toFixed(1); }
-    let ucol = '', udtxt = '—';   // Unified vs champion (negative = unified better)
+    let ucol = '', udtxt = '—';   // Unified vs baseline (negative = unified better)
     if (fm7 != null && m7 != null) { const ud = fm7 - m7; ucol = ud < -0.3 ? 'color:#1e7a3a' : ud > 0.3 ? 'color:#a8281a' : ''; udtxt = (ud >= 0 ? '+' : '') + ud.toFixed(1); }
-    let vcol = '', vdtxt = '—';   // v1.1 vs champion (negative = v1.1 better)
-    if (vm7 != null && m7 != null) { const vd = vm7 - m7; vcol = vd < -0.3 ? 'color:#1e7a3a' : vd > 0.3 ? 'color:#a8281a' : ''; vdtxt = (vd >= 0 ? '+' : '') + vd.toFixed(1); }
-    return `<tr><td>${z}</td><td>${m7 != null ? m7.toFixed(1) : '—'}</td><td>${mp != null ? mp.toFixed(1) : '—'}</td><td style="${col}">${dtxt}</td><td style="color:#b8860b">${jm7 != null ? jm7.toFixed(1) : '—'}</td><td style="${jcol}">${jdtxt}</td><td style="color:#8b5cf6">${fm7 != null ? fm7.toFixed(1) : '—'}</td><td style="${ucol}">${udtxt}</td><td style="color:#0d9488">${vm7 != null ? vm7.toFixed(1) : '—'}</td><td style="${vcol}">${vdtxt}</td><td>${fc7 != null ? (fc7 * 100).toFixed(0) + '%' : (c7 != null ? (c7 * 100).toFixed(0) + '%' : '—')}</td><td style="${col}">${arrow}</td></tr>`;
+    return `<tr><td>${z}</td><td>${m7 != null ? m7.toFixed(1) : '—'}</td><td>${mp != null ? mp.toFixed(1) : '—'}</td><td style="${col}">${dtxt}</td><td style="color:#8b5cf6">${fm7 != null ? fm7.toFixed(1) : '—'}</td><td style="${ucol}">${udtxt}</td><td>${fc7 != null ? (fc7 * 100).toFixed(0) + '%' : (c7 != null ? (c7 * 100).toFixed(0) + '%' : '—')}</td><td style="${col}">${arrow}</td></tr>`;
   }).join('');
-  tbl.innerHTML = `<thead><tr><th>Zone</th><th>MAE 7д</th><th>поп.7д</th><th>Δ</th><th title="JAO challenger MAE 7д">JAO</th><th title="JAO − champion">JAO−b</th><th title="Unified MAE 7д" style="color:#8b5cf6">Unified</th><th title="Unified − champion (− = Unified краще)">Uni−b</th><th title="hybrid-v1.1 MAE 7д" style="color:#0d9488">v1.1</th><th title="v1.1 − champion (− = v1.1 краще)">v1.1−b</th><th title="Unified coverage">Cover</th><th>Тренд</th></tr></thead><tbody>${rows}</tbody>`;
-  fcDrawHealthChart(M[zone] || [], zone, J[zone] || [], F[zone] || [], V[zone] || []);
+  tbl.innerHTML = `<thead><tr><th>Zone</th><th>MAE 7д</th><th>поп.7д</th><th>Δ</th><th title="Unified MAE 7д" style="color:#8b5cf6">Unified</th><th title="Unified − baseline (− = Unified краще)">Uni−b</th><th title="Unified coverage">Cover</th><th>Тренд</th></tr></thead><tbody>${rows}</tbody>`;
+  fcDrawHealthChart(M[zone] || [], zone, [], F[zone] || [], []);
   if (gh) gh.textContent = 'Тренд якості (MAE)';
   if (gsub) gsub.textContent = 'Нижче = точніше. 7д проти попередніх 7д.';
   if (gb) {
@@ -6007,9 +5966,9 @@ function fcRenderHealth(zone) {
     if (l != null && p != null) { const d = l - p; v = d < -1 ? `покращується (MAE ${p.toFixed(0)}→${l.toFixed(0)})` : d > 1 ? `погіршується (MAE ${p.toFixed(0)}→${l.toFixed(0)})` : `стабільно (~${l.toFixed(0)})`; }
     gb.innerHTML = `<div class="fc-guide-band"><span class="h">${zone}</span><span class="why">${v}</span></div>`
       + `<div style="margin-top:8px">${fcChallengerBadges()}</div>`
-      + `<p style="font-size:11px;color:#5b6271;margin:8px 0 0">Тижневий авто-огляд: <code>model_weekly_review.py</code> (paired-таблиця challengers). Промоушен: ≥14д OOS, краще на наборі, не гірше у жодній ключовій зоні.</p>`;
+      + `<p style="font-size:11px;color:#5b6271;margin:8px 0 0">Два фіналісти (відбір 2026-08-04): Baseline (hybrid-v1.0) + Unified (ENTSO-E+Volue+JAO). Unified точніший загалом; Baseline — страховка у хвостах (негативні/спайки). Тижневий авто-огляд: <code>model_weekly_review.py</code>.</p>`;
   }
-  if (leg) leg.innerHTML = `<span style="color:${FC_BLUE}">■ MAE щодня</span> &nbsp; <span style="color:#1f2430">■ 7-дн champion</span> &nbsp; <span style="color:#b8860b">▭ JAO 7-дн</span> &nbsp; <span style="color:#8b5cf6">▭ Unified 7-дн</span> &nbsp; <span style="color:#0d9488">▭ v1.1 7-дн</span>`;
+  if (leg) leg.innerHTML = `<span style="color:${FC_BLUE}">■ MAE щодня</span> &nbsp; <span style="color:#1f2430">■ 7-дн baseline</span> &nbsp; <span style="color:#8b5cf6">▭ Unified 7-дн</span>`;
   if (sum) { const a = fcMean(order.flatMap(z => (M[z] || []).slice(-7).map(x => x.mae))); sum.textContent = a != null ? `Середній MAE по ядру (останні 7д): ${a.toFixed(1)} €/MWh — нижче = краще` : '—'; }
 }
 
@@ -6112,7 +6071,7 @@ function fcComputeRadar(t) {
       if (v != null) hist.push(v);
     });
     if (hist.length >= 10) pct = Math.round(100 * hist.filter(v => v < avg).length / hist.length);
-    out.push({ pair: `${X}−${Y}`, avg, mx, lo, exec, execMw, pct, n30: hist.length });
+    out.push({ pair: `${X}−${Y}`, a: X, b: Y, avg, mx, lo, exec, execMw, pct, n30: hist.length });
   }
   out.sort((a, b) => b.avg - a.avg);
   return out;
@@ -6281,10 +6240,9 @@ function fcChallengerBadges() {
     });
     if (!tot) return `<p style="font-size:12px;margin:2px 0"><span style="color:${color}">●</span> ${name}: накопичує OOS-історію…</p>`;
     const dAvg = dsum / tot, pct = Math.round(100 * wins / tot);
-    const cand = dAvg < -0.3 && pct >= 55 && tot >= 110;   // ~11 зон × 10+ днів
-    return `<p style="font-size:12px;margin:2px 0"><span style="color:${color}">●</span> ${name} vs champion (14д, n=${tot} zone-days): краще у ${pct}%, ΔMAE ${dAvg >= 0 ? '+' : ''}${dAvg.toFixed(1)} €${cand ? ' — <b>кандидат на промоушен</b>' : ''}</p>`;
+    return `<p style="font-size:12px;margin:2px 0"><span style="color:${color}">●</span> ${name} vs Baseline (14д, n=${tot} zone-days): краще у ${pct}%, ΔMAE ${dAvg >= 0 ? '+' : ''}${dAvg.toFixed(1)} €</p>`;
   };
-  return mk('JAO', P.metrics_jao, '#b8860b') + mk('Unified', P.metrics_fund, '#8b5cf6') + mk('v1.1', P.metrics_v11, '#0d9488');
+  return mk('Unified', P.metrics_fund, '#8b5cf6');
 }
 
 // F1 — Morning brief (levels, top spreads, risk hours, model yesterday)
@@ -6308,15 +6266,16 @@ function fcRenderBrief() {
       if (pa.length >= 20) ref = pa.reduce((a, b) => a + b, 0) / pa.length;
       else { const ps = P.data[z][prev]['10:45'] || P.data[z][prev]['09:30']; if (ps) ref = fcAvgArr(ps.p50); }
     }
-    rows.push({ z, p50, d: (ref != null && p50 != null) ? p50 - ref : null,
-                spikes: s.p90.filter(v => v != null && v >= 150).length,
-                negs: s.p10.filter(v => v != null && v < 0).length });
+    rows.push({ z, p50, d: (ref != null && p50 != null) ? p50 - ref : null });
   }
   rows.sort((a, b) => (b.p50 ?? -1) - (a.p50 ?? -1));
   const lvl = rows.map(r => `<tr><td>${r.z}</td><td><b>${fmt(r.p50)}</b></td>`
-    + `<td style="color:${r.d > 2 ? '#a8281a' : r.d < -2 ? '#1e7a3a' : '#5b6271'}">${r.d == null ? '—' : (r.d >= 0 ? '+' : '') + r.d.toFixed(1)}</td>`
-    + `<td>${r.spikes ? '🔥' + r.spikes : ''}</td><td>${r.negs ? '−€' + r.negs : ''}</td></tr>`).join('');
-  const sp = fcComputeRadar(t).slice(0, 5);
+    + `<td style="color:${r.d > 2 ? '#a8281a' : r.d < -2 ? '#1e7a3a' : '#5b6271'}">${r.d == null ? '—' : (r.d >= 0 ? '+' : '') + r.d.toFixed(1)}</td></tr>`).join('');
+  // Static watchlist pairs (user 2026-08-04) — always these five, in this order.
+  const WATCH = [['DE-LU', 'HU'], ['HU', 'GR'], ['RS', 'HU'], ['RO', 'HU'], ['PL', 'DE-LU']];
+  const rad = fcComputeRadar(t);
+  const sp = WATCH.map(([a, b]) => rad.find(r => (r.a === a && r.b === b) || (r.a === b && r.b === a))
+                                   || { pair: `${a}−${b}`, avg: null, mx: null, exec: '—' });
   const spRows = sp.map(r => `<tr><td><b>${r.pair}</b></td><td>${fmt(r.avg)}</td><td>${fmt(r.mx)}</td><td>${r.exec}</td></tr>`).join('');
   let modelTxt = 'метрики ще накопичуються';
   const M = P.metrics || {}; const last = [];
@@ -6327,8 +6286,8 @@ function fcRenderBrief() {
   }
   body.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:18px;margin-top:8px">
     <div style="flex:1.1;min-width:300px"><h4 style="margin:0 0 4px;font-size:13px">Рівні D+1 — P50 baseload, Δ до вчора</h4>
-      <table class="pd-table"><thead><tr><th>Zone</th><th>P50</th><th>Δ</th><th title="год з P90≥150 (спайк-ризик)">🔥</th><th title="год з P10<0 (негативні)">−€</th></tr></thead><tbody>${lvl}</tbody></table></div>
-    <div style="flex:1.1;min-width:300px"><h4 style="margin:0 0 4px;font-size:13px">Топ-5 спредів D+1</h4>
+      <table class="pd-table"><thead><tr><th>Zone</th><th>P50</th><th>Δ</th></tr></thead><tbody>${lvl}</tbody></table></div>
+    <div style="flex:1.1;min-width:300px"><h4 style="margin:0 0 4px;font-size:13px">Спреди D+1 (watchlist)</h4>
       <table class="pd-table"><thead><tr><th>Пара</th><th>avg €</th><th>max h</th><th>headroom</th></tr></thead><tbody>${spRows || '<tr><td colspan="4">—</td></tr>'}</tbody></table>
       <p style="font-size:11px;color:#8a97a8;margin:4px 0 0">Повна таблиця з band/percentile — режим 🎯 Spread Radar.</p></div>
     <div style="flex:0.9;min-width:260px"><h4 style="margin:0 0 4px;font-size:13px">Модель</h4>
